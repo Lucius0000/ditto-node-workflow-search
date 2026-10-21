@@ -2,6 +2,45 @@
 
 [English](code-workflow-search.md)
 
+## 当前分步搜索协议（v7）
+
+当前覆盖HumanEval、MBPP与AutomationBench。下方原有v1/v2/v3内容保留为历史记录，其中“两新候选、优化器自由选分支、官方只测五题”不适用于v7。[Automation使用说明](automation-workflow-search.zh-CN.md)记录真实工具执行边界。
+
+分步入口显式限定每题每重复跨恢复累计保存的失败工作流尝试最多5次。已失败4次只剩1次，已失败5次在runner/模型派发前拒绝。有效0仍复用；judge故障必须有保存的评分checkpoint，不自动重新生成。运行目录残留running状态，或Automation只有预算记录而没有题目尝试证据时，拒绝自动继续，先交审核；不承诺任意硬崩溃都可透明恢复。其他旧evaluator调用者保留每次调用的默认重试语义。协议v7绑定此范围，早先真实运行保留原源码/协议身份。
+
+每套先评价代码预定义初始工作流，单列且不占最多10个新有效候选额度。程序从全部完整有效工作流按均分降序、评价序号稳定排序，取Top-4抽父。权重为`exp(0.2×100×(score−max(score)))`，概率为`0.3/n＋0.7×weight/sum(weights)`。seed42的xorshift32状态及抽样前后、概率、随机数、所选父流程均保存；每个新候选只抽父一次。
+
+优化器只能继续给定的当前草稿，每步增/改/重连/删一个节点，或仅装配Graph/Loop。一个候选允许连续多步修改多个节点；可运行草稿不会自动评价。最终编辑设置`submit:true`，或单独`operation:'submit', submit:true`才提交。中间依赖或装配可未闭合，提交时必须通过完整类型/配置、依赖可用性、Graph/Loop、输出和语义去重。每批最多3份回复，连续3批被拒或24个接受编辑未提交即暂停，不冻结。
+
+三套搜索入口代码默认每工作流全量Search独立重复 **5次**，初始和新候选相同；显式`--repeats 1`覆盖为1次。caseId包含重复索引，精确`N×R`成员全部完整有效后才排名/冻结。排名分数是各次全量Search均分的均值，标准差按重复级均分计算总体标准差。5次仍只算一个候选，不是HTTP重试。正常0分保留，工程无效留pending；恢复只复用原重复索引的有效结果，1↔5身份变化拒绝。中断后保留原父与PRNG，pending不重抽父/重提案。
+
+本轮所有真实主实验显式采用1次。5次路径完成离线集成回归，尚未运行5次完整模型搜索。冒烟、两端诊断、官方冻结流程评价各自1次，不继承搜索默认5；Test调用和评分保持0。
+
+本机Docker相关命令先运行`docker-ready`。项目门为`npm ci`、`npm run check`，Provider使用维护库存指定的Python环境。`CODE_SEARCH_SOURCE=ark-plan`读取`ARK_PLAN_KEY_LIU`，请求`deepseek-v4.1-flash`且锁返回`deepseek-v4-1-flash-261017`；`official`读取`DS_API_KEY`，请求/返回`deepseek-flash`。身份变化先停报，不自动换模型；密钥不入记录。
+
+```powershell
+npm run build
+$env:CODE_SEARCH_SOURCE='ark-plan'
+$env:CODE_SOUL_CONCURRENCY='3'
+node dist/cli.js search --dataset humaneval --data-dir '<锁定代码数据目录>' --output-root '<新运行根>' --rounds 10 --repeats 1 --docker-image '<预载镜像digest>'
+node dist/cli.js search --dataset humaneval --data-dir '<锁定代码数据目录>' --resume-dir '<同身份Search目录>' --rounds 10 --repeats 1 --docker-image '<同一digest>'
+```
+
+MBPP替换dataset，仍用锁定代码数据目录；HumanEval/MBPP固定33/86题。冒烟只取原序前5；官方入口使用冻结选中的同一计划评价**全量Search**，不再取前5，不重新搜索。最后的显式重复参数为1：
+
+```powershell
+node dist/code-search-cli.js smoke humaneval '<冒烟目录>' '<锁定代码数据>' '<镜像digest>' ark-plan '' 10 1
+node dist/code-search-cli.js official humaneval '<官方目录>' '<锁定代码数据>' '<同镜像digest>' official '<已完成方舟Search目录>' 10 1
+```
+
+官方入口在已完成短路前验证Search正常候选预算/收敛/可复算时间预算停止、完整有效评价账、最高分同分最早、冻结计划原始字节、数据成员及顺序、源码/依赖与运行环境。Search到官方允许来源/模型和阶段重复数变化；计划和其他实际身份须相符。官方结果目录独立，不回灌优化器；三套全量复核共33＋86＋200＝319题。
+
+收敛保留原函数逐前缀Top-3均分、z0、连续5次稳定转移，含不足3的前缀；完整历史少于4不收敛，6个同分完整评价可收敛。抽父Top-4与收敛Top-3分开；每个有效评价后检查，预算与收敛同时触发时主因converged。从全部有效流程选最高分，同分最早，不看Test/官方分数。
+
+离线`staged-search`、`repeated-entry`、`code-search-selection`及传输/Automation测试验证多节点草稿、显式提交、种子恢复、重复成员/均分/标准差、故障和来源/字节/成员拒绝及实际入口。原代码任务Provider局部消息、checker采纳与Docker回归继续适用。
+
+## 历史协议记录
+
 代码数据集入口复用既有单节点构造搜索及显式Graph/Loop装配，其它数据集入口保持原有行为。依赖固定为`@codesoul-co/ditto@0.1.1`，不修改Core。
 
 ## 环境与数据
@@ -60,3 +99,11 @@ TRAJECTORY将配置中的正安全整数maxSteps实际传给Runtime，上限仍�
 ## v3：明确代码revise的必填Message
 
 当前身份为humaneval-mbpp-node-search-v3及code-node-configuration-v3。仅组织化代码任务的revise请求增加既定要求的明确表达：无须修改也必须返回含完整代码的revisedResult assistant Message。verify/critique请求、schema及采纳规则保持；仍缺字段的回复仍属无效，程序不补造修订代码。旧v1/v2目录保留原身份，不作为新身份恢复。
+
+## 完整候选边界的时间停止
+
+程序接口`CodeSearchOptions.timeBudget`接收固定截止时间、保护窗、候选耗时下界、安全系数和预留。仅在完整有效评价后、无草稿或pending时正常停止，保存的停止证据由官方selection独立复算；服务故障和部分数据集不能改成时间正常结束。
+
+## 显式提交已有草稿
+
+v8协议仅在当前尚未提交的草稿已有接受编辑时，将节点binding完全相同且`submit:true`的replace规范化为既有独立submit操作。先验证原提案；附带assembly、实际binding变化、跨分支、无草稿和普通no-op均不规范化。原动作和规范动作均留审计，评价前仍执行完整计划校验与已评价拓扑去重；旧停滞运行保留原身份。

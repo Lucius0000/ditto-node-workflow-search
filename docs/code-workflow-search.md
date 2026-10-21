@@ -2,6 +2,47 @@
 
 [中文](code-workflow-search.zh-CN.md)
 
+## Current staged protocol (v7)
+
+The current protocol covers HumanEval, MBPP and AutomationBench. The remaining sections below preserve the earlier v1/v2/v3 implementation history; their two-candidate budget, free branch selection and five-case official examples do not describe v7. The [Automation guide](automation-workflow-search.md) describes the real tool execution boundary.
+
+Staged entries explicitly cap saved failed workflow attempts at five in total per case/repeat across recovery. Four leave one; five leave none, before runner/model dispatch. Valid zeros remain reusable. Judge failures require a saved scoring checkpoint and never trigger automatic regeneration. An unclean running manifest, or an Automation budget checkpoint without case-result attempt evidence, refuses automatic continuation until reviewed. This does not promise transparent recovery from arbitrary crashes. Other legacy evaluator callers retain their per-invocation default. Protocol v7 binds this scope; earlier real runs keep their original source/protocol identity.
+
+Each search evaluates its predefined initial workflow separately, then at most ten new valid complete workflows. The application samples a parent from the highest-scoring four complete valid workflows, with stable evaluation-order ties. For scores `s`, weights are `exp(0.2 * 100 * (s - max(s)))`; probabilities are `0.3/n + 0.7 * weight/sum(weights)`. Seed42 uses the recorded xorshift32 state. Sampling happens once per new candidate, not once per edit.
+
+Only the supplied current draft may be edited. Each edit adds, replaces, rewires or removes one node, or changes assembly alone. Multiple edits may change several nodes under the same selected parent. Runnable drafts remain unscored until an explicit `submit:true` on the last edit or a standalone `operation:'submit', submit:true`. Intermediate unresolved dependencies may persist; submission requires complete type/configuration, dependency, Graph/Loop, output and semantic-duplicate validation. Three rejected batches (three responses each) or 24 accepted edits without submission pause without freezing.
+
+All three search entry points default to **five independent full-Search executions per candidate**, including the initial workflow. `--repeats 1` explicitly selects one. Case IDs include repeat indices; all `N×R` results must be valid before ranking or freezing. Scores average the complete Search mean of each repetition; standard deviation is the population standard deviation of repetition means. A repeat is not a new candidate or an HTTP retry. Valid zeros remain in the denominator. Failed candidates remain pending; recovery retains valid results at their original repeat index, and refuses `1↔5` identity changes. A draft resumes its selected parent and PRNG state, without new sampling or proposals for pending evaluations.
+
+The current validation round explicitly uses one repetition for all real search executions. Five-repeat behavior is covered by offline integration tests; a complete five-repeat model search has not been run. Smoke, matched diagnostics and official fixed-workflow evaluation each use one repetition, independently of search defaults. Test model calls and scoring remain zero.
+
+Run `docker-ready` on the maintained Windows host before Docker-dependent commands. Install with `npm ci`, then `npm run check`. Set `DITTO_PROVIDER_PYTHON` to the maintained provider environment. Models are fixed to the approved source: `CODE_SEARCH_SOURCE=ark-plan` reads `ARK_PLAN_KEY_LIU`, requests `deepseek-v4.1-flash` and requires response model `deepseek-v4-1-flash-261017`; `official` reads `DS_API_KEY` and requests/requires `deepseek-flash`. Endpoint/model identity changes require review. No credentials belong in artifacts.
+
+```powershell
+npm run build
+$env:CODE_SEARCH_SOURCE='ark-plan'
+$env:CODE_SOUL_CONCURRENCY='3'
+node dist/cli.js search --dataset humaneval --data-dir '<locked-code-data>' --output-root '<new-run-root>' --rounds 10 --repeats 1 --docker-image '<preloaded-image-digest>'
+# Same semantic identity; resume the pending candidate and case indices.
+node dist/cli.js search --dataset humaneval --data-dir '<locked-code-data>' --resume-dir '<search-run>' --rounds 10 --repeats 1 --docker-image '<same-image-digest>'
+# Substitute mbpp for its fixed 86-case Search. HumanEval has 33 cases.
+```
+
+Smoke selects the original first five cases. Official mode evaluates the frozen selected plan on the **complete Search**, not five cases, and never searches or changes selection. Its final positional repeat argument must be one:
+
+```powershell
+node dist/code-search-cli.js smoke humaneval '<smoke-run>' '<locked-code-data>' '<image-digest>' ark-plan '' 10 1
+node dist/code-search-cli.js official humaneval '<official-run>' '<locked-code-data>' '<same-image-digest>' official '<completed-Ark-search-run>' 10 1
+```
+
+Before completed-run reuse, official mode validates the source Search's normal candidate-budget/convergence or independently replayed time-budget termination, complete valid evaluation ledger, earliest highest score, original frozen plan bytes, member order, source code, dependencies and execution environment. Source/model and stage repeat count may change from search to official; the plan and all other effective execution identities must match. Official results are stored separately and never become optimizer feedback. The three frozen full-Search checks total33+86+200=319 cases.
+
+Convergence uses the historical prefix Top-3 mean, z0 and five unchanged transitions, including short prefixes. Fewer than four complete evaluations cannot converge; six equal complete evaluations can. Parent Top-4 and convergence Top-3 are different. Budget/convergence are checked after every valid evaluation; convergence wins if both trigger together. Freeze uses the highest score across all valid workflows, earliest on ties, and never Test or official scores.
+
+The offline `staged-search`, `repeated-entry`, `code-search-selection`, transport and Automation tests cover multi-node drafts, explicit submission, seed recovery, exact repeat membership, mean/SD, faults, source/byte/membership rejection and real entry dispatch. Existing code-task Provider input, checker/adoption and Docker regressions remain required.
+
+## Historical protocol record
+
 The code benchmark entry uses the existing single-node construction search and explicit Graph/Loop assembly. Other dataset entries keep their existing behavior. It depends on the pinned `@codesoul-co/ditto@0.1.1` package and never modifies Core.
 
 ## Prerequisites and data
@@ -60,3 +101,11 @@ Before any official completed-run shortcut, the entry reads and validates the co
 ## Required code revise message (v3)
 
 The current identities are `humaneval-mbpp-node-search-v3` and `code-node-configuration-v3`. Only organization-backed code-task revise requests add the explicit existing requirement: return the complete `revisedResult` assistant message even when the original code is unchanged. Verify/critique requests and all adoption/schema rules remain unchanged. An omitted required field still invalidates evaluation; the application does not fabricate a replacement. Old v1/v2 runs stay under their recorded identities.
+
+## Complete-candidate time stopping
+
+The programmatic `CodeSearchOptions.timeBudget` accepts a fixed deadline, guard time, minimum candidate duration, safety factor and reserve. It only stops after a full valid evaluation when no draft or pending workflow remains. Persisted stop evidence is replayed by official selection. A service fault or partial dataset never becomes a time-budget completion.
+
+## Explicit submission of an existing draft
+
+Protocol v8 recognizes a fully identical `replace` binding with `submit:true` as the existing standalone submit operation only after an accepted edit in the current unsubmitted draft. The original proposal is validated first; an attached assembly, changed binding, wrong branch, missing draft or plain no-op is never normalized. Original and canonical actions are audited. Full plan validation and evaluated-topology deduplication still run before evaluation; old stalled runs keep their original identity.
