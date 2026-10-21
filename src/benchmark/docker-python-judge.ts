@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import type { CodeJudge, CodeJudgeRequest, CodeJudgeResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
-const PASS_MARKER = "__DITTO_PRIVATE_TESTS_PASSED__";
+class CandidateOutputLimit extends Error {}
 
 export interface DockerPythonJudgeOptions {
   /** Must be reviewed and pre-pulled; the judge never pulls during evaluation. */
@@ -30,8 +30,8 @@ export class DockerPythonJudge implements CodeJudge {
   private readonly outputLimitBytes: number;
 
   constructor(options: DockerPythonJudgeOptions = {}) {
-    this.image = options.image ?? process.env.CODE_JUDGE_IMAGE ?? "python:3.13-slim";
-    this.timeoutMs = options.timeoutMs ?? 12_000;
+    this.image = options.image ?? process.env.CODE_JUDGE_IMAGE ?? "python:3.12-alpine";
+    this.timeoutMs = options.timeoutMs ?? 60_000;
     this.memory = options.memory ?? "256m";
     this.cpus = options.cpus ?? 1;
     this.pidsLimit = options.pidsLimit ?? 64;
@@ -61,9 +61,11 @@ export class DockerPythonJudge implements CodeJudge {
     signal?.throwIfAborted();
     const started = Date.now();
     const name = `ditto-python-${randomUUID()}`;
-    const script = buildHarness(request);
+    const passMarker = `DITTO_PASS_${randomUUID()}`;
+    const startedMarker = `DITTO_STARTED_${randomUUID()}`;
+    const script = buildHarness(request, passMarker);
     const args = [
-      "run", "--rm", "--pull=never", "--name", name,
+      "run", "--rm", "--init", "--pull=never", "--name", name,
       "--network", "none",
       "--read-only",
       "--cap-drop", "ALL",
@@ -80,20 +82,23 @@ export class DockerPythonJudge implements CodeJudge {
       "--env", "HOME=/tmp",
       "--stop-timeout", "1",
       "-i", this.image,
-      "python", "-I", "-B", "-",
+      "sh", "-c", 'printf "%s\\n" "$1"; exec timeout -s KILL 10 python -I -B -', "grader", startedMarker,
     ];
 
     try {
       const execution = await runDocker(args, script, name, this.timeoutMs, this.outputLimitBytes, signal);
-      if (execution.exitCode === 125 || /(?:failed to connect|cannot connect|error response from daemon|unable to find image|docker daemon)/i.test(execution.stderr)) {
+      if (!execution.stdout.startsWith(`${startedMarker}\n`) || [125, 126, 127].includes(execution.exitCode)) {
         throw new Error(`Docker judge infrastructure failed: ${compactDiagnostics(execution.stdout, execution.stderr, false)}`);
       }
-      const passed = execution.exitCode === 0 && execution.stdout.split(/\r?\n/).includes(PASS_MARKER);
+      const passed = execution.exitCode === 0 && execution.stdout.trimEnd().endsWith(passMarker);
       return Object.freeze({
         passed,
-        diagnostics: compactDiagnostics(execution.stdout, execution.stderr, passed),
+        diagnostics: `exit=${execution.exitCode}; ${compactDiagnostics(execution.stdout.replace(`${startedMarker}\n`, "").replace(passMarker, ""), execution.stderr, passed)}`,
         durationMs: Date.now() - started,
       });
+    } catch (error) {
+      if (error instanceof CandidateOutputLimit) return Object.freeze({ passed: false, diagnostics: error.message, durationMs: Date.now() - started });
+      throw error;
     } finally {
       await removeContainer(name);
     }
@@ -134,11 +139,11 @@ function runDocker(
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
-      if (Buffer.byteLength(stdout) > outputLimitBytes) stop(new Error("Python stdout exceeded its limit"));
+      if (Buffer.byteLength(stdout) > outputLimitBytes) stop(new CandidateOutputLimit("Python stdout exceeded its limit"));
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
-      if (Buffer.byteLength(stderr) > outputLimitBytes) stop(new Error("Python stderr exceeded its limit"));
+      if (Buffer.byteLength(stderr) > outputLimitBytes) stop(new CandidateOutputLimit("Python stderr exceeded its limit"));
     });
     child.once("error", (error) => finish(() => reject(new Error(`Unable to start Docker: ${error.message}`, { cause: error }))));
     child.once("close", (code) => finish(() => failure ? reject(failure) : resolve({ exitCode: code ?? 125, stdout, stderr })));
@@ -168,47 +173,39 @@ function dockerClientEnvironment(): NodeJS.ProcessEnv {
   return Object.fromEntries(allowed.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]!]]));
 }
 
-function buildHarness(request: CodeJudgeRequest): string {
+function buildHarness(request: CodeJudgeRequest, passMarker: string): string {
   const imports = request.testImports.join("\n");
   const invocation = request.dataset === "humaneval" ? `check(${request.entryPoint})` : "check()";
   return [
-    "from typing import *",
-    "import collections, functools, hashlib, heapq, itertools, math, operator, random, re, statistics, string",
-    humanEvalSupport(request.dataset, request.entryPoint),
+    "import math, hashlib, re",
+    "from typing import Any, Dict, List, Optional, Tuple",
     request.candidate,
     imports,
     request.testSource,
     `assert callable(${request.entryPoint}), ${JSON.stringify(`Entry point ${request.entryPoint} is not callable`)}`,
     invocation,
-    `print(${JSON.stringify(PASS_MARKER)})`,
+    `print(${JSON.stringify(passMarker)})`,
     "",
   ].filter(Boolean).join("\n\n");
 }
 
-function humanEvalSupport(dataset: "humaneval" | "mbpp", entryPoint: string): string {
-  if (dataset !== "humaneval") return "";
-  if (entryPoint === "decode_cyclic") {
-    return `def encode_cyclic(s: str):\n    groups = [s[3*i:min(3*i+3, len(s))] for i in range((len(s)+2)//3)]\n    return \"\".join((g[1:]+g[0]) if len(g) == 3 else g for g in groups)`;
-  }
-  if (entryPoint === "decode_shift") {
-    return `def encode_shift(s: str):\n    return \"\".join(chr(((ord(ch)+5-ord(\"a\"))%26)+ord(\"a\")) for ch in s)`;
-  }
-  if (entryPoint === "find_zero") return "def poly(xs: list, x: float):\n    return sum(coeff * (x ** i) for i, coeff in enumerate(xs))";
-  return "";
-}
-
 function compactDiagnostics(stdout: string, stderr: string, passed: boolean): string {
-  const cleanedOut = stdout.split(/\r?\n/).filter((line) => line !== PASS_MARKER).join("\n").trim();
+  const cleanedOut = stdout.trim();
   const combined = [cleanedOut, stderr.trim()].filter(Boolean).join("\n");
   if (!combined) return passed ? "private tests passed" : "private tests failed without diagnostics";
   return combined.slice(-4_000);
 }
 
 export function extractPythonCandidate(modelOutput: string, publicPrompt: string, entryPoint: string): string {
-  const fences = [...modelOutput.matchAll(/```(?:python|py)?\s*\r?\n([\s\S]*?)```/gi)].map((match) => match[1]!.trim());
+  const fences = [...modelOutput.matchAll(/```(?:python|py)?[^\S\r\n]*\r?\n([\s\S]*?)```/gi)].map((match) => match[1]!.trimEnd());
   const fencedWithEntry = fences.find((candidate) => containsEntryPoint(candidate, entryPoint));
-  const extracted = fencedWithEntry ?? fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
-  if (containsEntryPoint(extracted, entryPoint)) return extracted;
+  const extracted = fencedWithEntry ? fences.join("\n\n") : fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
+  if (containsEntryPoint(extracted, entryPoint)) {
+    // HumanEval prompts may define public helpers/imports before the entry point.
+    const signature = new RegExp(`^(?:async\\s+)?def\\s+${entryPoint}\\s*\\(`, "m").exec(publicPrompt);
+    const preamble = signature ? publicPrompt.slice(0, signature.index).trimEnd() : "";
+    return preamble && !extracted.startsWith(preamble) ? `${preamble}\n\n${extracted}` : extracted;
+  }
   const lines = extracted.split(/\r?\n/);
   const indents = lines.filter((line) => line.trim()).map((line) => line.match(/^\s*/)![0].length);
   const commonIndent = indents.length ? Math.min(...indents) : 0;
@@ -217,12 +214,12 @@ export function extractPythonCandidate(modelOutput: string, publicPrompt: string
 }
 
 function stripPlainLanguagePrefix(output: string): string {
-  const lines = output.trim().split(/\r?\n/);
+  const lines = output.replace(/^\s*\r?\n/, "").trimEnd().split(/\r?\n/);
   const firstCodeLine = lines.findIndex((line) => /^\s*(?:@|from\s+\S+\s+import\s+|import\s+|(?:async\s+)?def\s+|class\s+)/.test(line));
-  return (firstCodeLine < 0 ? lines : lines.slice(firstCodeLine)).join("\n").trim();
+  return (firstCodeLine < 0 ? lines : lines.slice(firstCodeLine)).join("\n").trimEnd();
 }
 
 function containsEntryPoint(source: string, entryPoint: string): boolean {
   const escaped = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:async\\s+)?def\\s+${escaped}\\s*\\(`).test(source);
+  return new RegExp(`^[ \\t]*(?:async\\s+)?def\\s+${escaped}\\s*\\(`, "m").test(source);
 }

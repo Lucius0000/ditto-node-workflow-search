@@ -101,7 +101,13 @@ function loadedCode(
   const scorer: PrivateScorer = {
     async score(taskId, prediction): Promise<ScoreEvidence> {
       const reference = referenceFor(references, taskId, dataset);
-      const candidate = extractPythonCandidate(prediction, reference.publicPrompt, reference.entryPoint);
+      // MBPP's public prompt starts with prose, followed by a Python signature.
+      // Only that code suffix may prefix a function-body completion.
+      const promptLines = reference.publicPrompt.split(/\r?\n/);
+      const firstCodeLine = dataset === "mbpp"
+        ? promptLines.findIndex(line => /^(?:from\s+\S+\s+import\s+|import\s+|(?:async\s+)?def\s+)/.test(line)) : 0;
+      const codePrompt = firstCodeLine < 0 ? "" : promptLines.slice(firstCodeLine).join("\n");
+      const candidate = extractPythonCandidate(prediction, codePrompt, reference.entryPoint);
       const judged = await judge.judge({
         dataset,
         taskId,
@@ -117,7 +123,7 @@ function loadedCode(
         normalizedExpected: "pass",
         normalizedPrediction: judged.passed ? "pass" : "fail",
         method: `${dataset}-docker-pass-at-1`,
-        details: Object.freeze({ diagnostics: judged.diagnostics, judgeDurationMs: judged.durationMs }),
+        details: Object.freeze({ candidate, diagnostics: judged.diagnostics, judgeDurationMs: judged.durationMs }),
       });
     },
     expectedLabel(taskId): string {
@@ -130,7 +136,14 @@ function loadedCode(
     split,
     tasks,
     identity,
-    evaluate: (runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluateTasks(tasks, scorer, runner, options),
+    evaluate: (runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => {
+      const ids = options?.engineeringTaskIds;
+      if (ids && (ids.length === 0 || new Set(ids).size !== ids.length || ids.some(id => !references.has(id)))) {
+        throw new Error("Engineering task IDs must be nonempty, unique and present in the verified split");
+      }
+      const selected = ids ? ids.map(id => tasks.find(task => task.id === id)!) : tasks;
+      return evaluateTasks(selected, scorer, runner, options);
+    },
   });
 }
 

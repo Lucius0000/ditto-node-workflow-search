@@ -44,6 +44,8 @@ export interface BenchmarkIdentity {
 }
 
 export interface BenchmarkEvaluationOptions {
+  /** Engineering-only explicit membership, after the entire code split is verified. */
+  readonly engineeringTaskIds?: readonly string[];
   readonly repeats?: number;
   readonly concurrency?: number;
   readonly retryAttempts?: number;

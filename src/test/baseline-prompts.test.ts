@@ -88,3 +88,19 @@ test("missing or changed baseline prompt provenance cannot resume into the new p
   }
   assertBaselinePromptProfile("math", undefined);
 });
+
+for (const dataset of ["humaneval", "mbpp"] as const) {
+  test(`${dataset} frozen code prompts preserve the MFlow source contract`, () => {
+    const prompts = baselinePrompts(dataset)!;
+    assert.match(prompts.agent, /Return the complete executable Python solution/);
+    assert.deepEqual(Object.fromEntries(Object.entries(prompts).map(([role, text]) => [role, createHash("sha256").update(text).digest("hex")])), {
+      agent: "e657d1e085559e4736b6a9de3642905c8fd11c7acbd1652609d7773cadc01a16",
+      review: "1d43355b6ee30bc8f5a65bd6d660615282e1fa319aef70fa416e7f4565aa0815",
+      integrate: "d5dc5efb7ea76a40ba1777557c4e06d60a462b8e15714bffbb334998ea0c65eb",
+    });
+    assert.match(prompts.agent, /Task:\nPreserve the requested function name/);
+    assert.match(baselineTextMessages(dataset, prompts.agent, "PUBLIC")[0]!.content, /Assignment: Implement the requested Python function correctly\./);
+    assertBaselinePromptProfile(dataset, baselinePromptProfile(dataset));
+    assert.throws(() => assertBaselinePromptProfile(dataset, undefined), /pinned MFlow contract/);
+  });
+}

@@ -32,6 +32,13 @@ Problem:`,
 });
 
 const dropContract = "Answer the question using only the supplied passage and question. Return only the concise final answer; multiple answer spans may be separated with |. Do not include a derivation, Markdown or a boxed answer.";
+const codeContract = "Return the complete executable Python solution with the requested function signature and any needed imports. No Markdown fences, explanations or boxed answers. Only public examples from the problem may be used as checks; hidden evaluation tests are not available.";
+const codeGuidance = "\nPreserve the requested function name, argument order, return type and stated behavior. Separate requirements explicitly given in the task from your assumptions; public examples exist only if the task actually contains them. Use self-created tests as hypotheses, not an oracle for ambiguous wording. Keep any Python checks finite and executable with loops rather than enumerated cases. An empty or successful tool response proves no assertions beyond those actually executed. Change an existing candidate only for a concrete specification mismatch or counterexample, and check the revised implementation before replacing it. Return complete solution code, without a test harness or debugging output.";
+const codePrompts: BaselinePrompts = Object.freeze({
+  agent: `Solve the original task accurately. ${codeContract}\n\nTask:${codeGuidance}`,
+  review: `Review the supplied candidate against the ORIGINAL task. Correct concrete implementation, reasoning or interpretation errors. If it is correct, restate it unchanged. ${codeContract}\n\nTask and candidate:${codeGuidance}`,
+  integrate: `Resolve disagreements by checking the original specification and the supplied candidates. Produce one correct solution, rather than voting on wording. ${codeContract}\n\nTask:${codeGuidance}`,
+});
 const dropPrompts: BaselinePrompts = Object.freeze({
   agent: `Solve the original task accurately. ${dropContract}\n\nTask:`,
   review: `Review the supplied candidate against the ORIGINAL task. Correct concrete implementation, reasoning or interpretation errors. If it is correct, restate it unchanged. ${dropContract}\n\nTask and candidate:`,
@@ -55,26 +62,29 @@ const dropRootProfile = Object.freeze({
   private_context: "",
 });
 
-/** Only these two new adapters adopt this prompt contract; MATH stays unchanged. */
+/** Frozen task-specific baseline contracts; MATH stays unchanged. */
 export function baselinePrompts(dataset: DatasetName): BaselinePrompts | undefined {
-  return dataset === "gsm8k" ? gsm8kPrompts : dataset === "drop" ? dropPrompts : undefined;
+  return dataset === "gsm8k" ? gsm8kPrompts : dataset === "drop" ? dropPrompts : dataset === "humaneval" || dataset === "mbpp" ? codePrompts : undefined;
 }
 
 /** Reproduce composition.ts textMessages for the initial root, without adapter suffixes. */
 export function baselineTextMessages(
-  dataset: "drop" | "gsm8k",
+  dataset: "drop" | "gsm8k" | "humaneval" | "mbpp",
   instruction: string,
   taskPrompt: string,
   evidence: unknown = "",
 ): readonly { readonly role: "user"; readonly content: string }[] {
-  const p = dataset === "drop" ? dropRootProfile : gsm8kRootProfile;
+  const p = dataset === "drop" ? dropRootProfile : dataset === "gsm8k" ? gsm8kRootProfile : {
+    ...dropRootProfile, objective: "Implement the requested Python function correctly.",
+    capability: "Python programming and specification checking", expected_output: codeContract,
+  };
   return [{ role: "user", content: instruction + "\n\n" + taskPrompt
     + (evidence ? "\n\n" + (typeof evidence === "string" ? evidence : JSON.stringify(evidence)) : "")
     + `\n\nAssignment: ${p.objective}\nCapability: ${p.capability}\nReasoning approach: ${p.reasoning}\nExpected output: ${p.expected_output}\nStopping criterion: ${p.stop_condition}\n${p.private_context}` }];
 }
 
 const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const promptProfiles = Object.freeze(Object.fromEntries((["drop", "gsm8k"] as const).map(dataset => [dataset, Object.freeze({
+const promptProfiles = Object.freeze(Object.fromEntries((["drop", "gsm8k", "humaneval", "mbpp"] as const).map(dataset => [dataset, Object.freeze({
   id: "mflow-seed-root-text-v1",
   dataset,
   source: MFLOW_PROMPT_SOURCE,
