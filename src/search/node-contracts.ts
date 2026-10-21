@@ -13,5 +13,13 @@ export const BINDING_CONTRACT = Object.freeze({
   graphs:'Explicit nonempty dependency DAGs; all active nodes assigned exactly once. Assembly changes Graph membership, transitions and delivery only; never node configs or bindings.',
   loop:'Explicit next/switch/repeat/end over public declared outputs. No oracle or implicit checker/revision suffix.',
   scoring:'Private code tests grade final delivered code outside this workflow. Only valid complete evaluations are experiences; score zero is valid. No private answers, hidden tests or judge diagnostics are supplied to the optimizer.',
-  search:'One add/replace/rewire/remove or pure organize per proposal. Real node versions form vertices; workflow evaluations have a separate ledger. Initial evaluation is separate from the two new valid workflow evaluations.',
+  search:'The program samples one complete valid parent from the score-ranked Top-4 with the fixed mixed probabilities. Keep it throughout multi-step construction. One add/replace/rewire/remove or pure organize per edit, then explicit submit:true; runnable drafts are not automatically evaluated. Initial is separate from the new-candidate budget. Only a unique complete valid full evaluation counts, including valid zero.',
+});
+export const AUTOMATION_NODE_CONTRACTS=Object.freeze({
+  ...NODE_CONTRACTS,
+  actor:{input:'Explicit current/feedback context and fixed official schemas.',output:'Assistant text and a batch of actionRequests with callIds.',boundary:'No new tools, implementations, private worlds or scoring access.'},
+  act:{input:'A directly wired actor pending action.',output:'Actual ExternalResult with matching callId.',boundary:'Execute each pending request once per actor turn in the same task world.'},
+  observe:{input:'One real ACT result.',output:'Observation retaining callId and actual content.',boundary:'Reasoning text is not a tool effect.'},
+  update:{input:'Context, assistant requests, matching OBSERVE results.',output:'Updated Context.',boundary:'Preserve complete assistant/tool groups; feedback is explicit and task-local.'},
+  output:{input:'Explicit result message.',output:'Delivery receipt.',boundary:'No world mutation or private scoring.'},
 });

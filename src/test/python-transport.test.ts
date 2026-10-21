@@ -87,3 +87,15 @@ test("JSONL transport propagates subprocess exit to an active streamed response"
     await assert.rejects(response.text(), /exited \(7\)/);
   } finally { await transport.close(); }
 });
+
+test('locked response model rejects changed or missing identities before accepting a complete output',async()=>{
+  for(const model of ['expected','changed',undefined]){
+    const script=`import {createInterface} from 'node:readline';createInterface({input:process.stdin}).on('line',line=>{const {id}=JSON.parse(line);process.stdout.write(JSON.stringify({id,status:200,body:{${model===undefined?'':`model:${JSON.stringify(model)},`}choices:[]}})+'\\n');});`;
+    const transport=new PythonTransport({...settings,expectedResponseModel:'expected'},{command:process.execPath,arguments:['--input-type=module','-e',script]});
+    try{
+      const pending=transport.fetch(settings.baseUrl,{body:'{}'});
+      if(model==='expected')assert.equal((await pending).status,200);
+      else await assert.rejects(pending,/frozen model identity/);
+    }finally{await transport.close();}
+  }
+});

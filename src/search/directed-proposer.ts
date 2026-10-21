@@ -100,6 +100,7 @@ export function validateDirectedNodes(nodes: readonly WorkflowNodeSpec[], datase
   for (const node of nodes) {
     if (node.type !== "CONTEXT.LOAD") {
       if (!["INFER.REASONING.SAMPLE", "INFER.REASONING.TRAJECTORY", "INFER.REASONING.REFLECT", "INFER.REASONING.DELIBERATE"].includes(node.type)) throw new Error("Unsupported inference node");
+      if(!('generation' in node.config))throw Error('Unsupported inference node');
       const generation = node.config.generation;
       if (generation.temperature !== GENERATION.temperature || generation.maxTokens !== GENERATION.maxTokens || Object.keys(generation).length !== 2) throw new Error("Inference parameters must match the frozen generation profile");
       if (node.type === "INFER.REASONING.TRAJECTORY" && node.config.maxSteps !== Number.MAX_SAFE_INTEGER) throw new Error("Trajectory maxSteps must match the frozen execution profile");

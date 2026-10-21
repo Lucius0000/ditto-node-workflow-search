@@ -26,7 +26,7 @@ export interface FixedSplitLock {
 
 // Raw byte identities from MFlow data/aflow.lock.json at MFLOW_BASELINE_COMMIT.
 // Do not substitute convertedSha256: these adapters consume AFlow's raw files.
-export const FIXED_SPLIT_LOCKS: Readonly<Record<`${DatasetName}_${BenchmarkSplit}.jsonl`, FixedSplitLock>> = Object.freeze({
+export const FIXED_SPLIT_LOCKS: Readonly<Record<`${Exclude<DatasetName,'automationbench'>}_${BenchmarkSplit}.jsonl`, FixedSplitLock>> = Object.freeze({
   "drop_validate.jsonl": Object.freeze({ count: 200, sha256: "fa761d3f46c3c995278532ee9354fe78fd03fa6567774ea359e149dea5cf2362" }),
   "drop_test.jsonl": Object.freeze({ count: 800, sha256: "a0ae6fac687d2bb393c9c6a43d966edf9ed24d0d157cfb7f7a4747cc8b3d9742" }),
   "humaneval_validate.jsonl": Object.freeze({ count: 33, sha256: "7c09e2424572a0e82b14d2dc145bf86feb2aeef9828b8b37c7e87dfe88d902f7" }),
@@ -40,6 +40,7 @@ export const FIXED_SPLIT_LOCKS: Readonly<Record<`${DatasetName}_${BenchmarkSplit
 });
 
 export function fixedSplitLock(dataset: DatasetName, split: BenchmarkSplit): FixedSplitLock {
+  if(dataset==='automationbench')throw Error('Automation uses its own official split identity');
   return FIXED_SPLIT_LOCKS[`${dataset}_${split}.jsonl`];
 }
 

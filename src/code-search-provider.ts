@@ -14,5 +14,6 @@ export function codeSearchProvider(source: CodeSearchSource, env: NodeJS.Process
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 1800000) throw Error('Invalid request deadline');
   return Object.freeze({ apiKey, concurrency, timeoutMs,
     baseUrl: source === 'official' ? 'https://api.deepseek.com' : 'https://ark.cn-beijing.volces.com/api/plan/v3',
-    model: source === 'official' ? 'deepseek-flash' : 'deepseek-v4.1-flash' });
+    model: source === 'official' ? 'deepseek-flash' : 'deepseek-v4.1-flash',
+    expectedResponseModel:source==='official'?'deepseek-flash':'deepseek-v4-1-flash-261017' });
 }

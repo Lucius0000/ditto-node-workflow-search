@@ -1,5 +1,6 @@
 import type { AgentRunResult, BenchmarkTask, CaseResult, EvaluationSummary } from "../domain.js";
 import type { BenchmarkEvaluationOptions, BenchmarkRunner, PrivateScorer } from "./types.js";
+import {AutomationBudget,automationBudgetScope,AUTOMATION_EXECUTION_BUDGET} from '../workflow/automation-budget.js';
 
 export async function evaluateTasks(
   tasks: readonly BenchmarkTask[],
@@ -13,6 +14,7 @@ export async function evaluateTasks(
   if (!Number.isInteger(repeats) || repeats < 1) throw new Error("Evaluation repeats must be a positive integer");
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("Evaluation concurrency must be a positive integer");
   if (!Number.isInteger(retryAttempts) || retryAttempts < 1) throw new Error("Retry attempts must be a positive integer");
+  if(options.workflowRetryScope!==undefined&&!['invocation','case-repeat'].includes(options.workflowRetryScope))throw Error('Invalid workflow retry scope');
 
   const started = Date.now();
   const results: CaseResult[] = [];
@@ -23,7 +25,7 @@ export async function evaluateTasks(
     const current = await mapLimit(tasks, concurrency, async (task) => {
       const prior = options.priorCases?.find(value => value.caseId === `${task.id}#${repeat + 1}`);
       const result = prior?.valid === true && prior.error === undefined
-        ? prior : await evaluateOne(task, repeat, scorer, runner, retryAttempts, prior);
+        ? prior : await evaluateOne(task, repeat, scorer, runner, retryAttempts, prior,options.automationBudgetPersistence,options.workflowRetryScope);
       completed++;
       await options.onCase?.({ completed, total, result });
       return result;
@@ -58,19 +60,37 @@ export async function evaluateTasks(
 }
 
 async function evaluateOne(
+  task: BenchmarkTask, repeat:number, scorer:PrivateScorer, runner:BenchmarkRunner,retryAttempts:number,prior?:CaseResult,persistence?:BenchmarkEvaluationOptions['automationBudgetPersistence'],retryScope:BenchmarkEvaluationOptions['workflowRetryScope']='invocation',
+):Promise<CaseResult>{
+  if(task.dataset!=='automationbench')return evaluateOneBody(task,repeat,scorer,runner,retryAttempts,prior,false,retryScope);
+  const caseId=`${task.id}#${repeat+1}`,saved=persistence?.load(caseId),previous=prior?.automationBudgetProgress;
+  if(saved&&previous&&(saved.startedAt!==previous.startedAt||saved.actorCalls<previous.actorCalls))throw Error('Automation budget checkpoint regressed behind saved result');
+  const budget=new AutomationBudget(Date.now,saved??previous,persistence?progress=>persistence.save(caseId,progress):undefined);
+  try{const result=await automationBudgetScope.run(budget,()=>evaluateOneBody(task,repeat,scorer,runner,retryAttempts,prior,saved!==undefined&&prior===undefined,retryScope));return {...result,automationBudgetProgress:budget.progress()};}
+  finally{budget.close();}
+}
+async function evaluateOneBody(
   task: BenchmarkTask,
   repeat: number,
   scorer: PrivateScorer,
   runner: BenchmarkRunner,
   retryAttempts: number,
   prior?: CaseResult,
+  interruptedBudget=false,
+  retryScope:BenchmarkEvaluationOptions['workflowRetryScope']='invocation',
 ): Promise<CaseResult> {
   const started = Date.now();
   const attempts: NonNullable<CaseResult["attempts"]>[number][] = [...(prior?.attempts ?? [])];
   const history = prior ? { previousResults: Object.freeze([prior]) } : {};
   let run: AgentRunResult;
   try {
-    run = await retryWorkflow(() => runner(task), retryAttempts, attempts);
+    if(retryScope==='case-repeat'&&interruptedBudget)throw Error('Interrupted workflow has no case-result attempt evidence; automatic fresh workflow recovery is refused');
+    if(retryScope==='case-repeat'&&prior?.failureKind==='judge'&&prior.judgeRecovery===undefined)throw Error('Judge-only recovery requires a saved scoring checkpoint; automatic regeneration is refused');
+    const budget=automationBudgetScope.getStore();
+    if((interruptedBudget||(prior?.error&&prior.failureKind!=='judge'))&&budget&&(budget.wallExpired||budget.actorCalls>=AUTOMATION_EXECUTION_BUDGET.maxActorCalls))throw Error(`Unresolved Automation infrastructure fault with exhausted case budget: ${prior?.error??'interrupted before case result checkpoint'}`);
+    run = prior?.failureKind==='judge'&&prior.judgeRecovery!==undefined
+      ? {answer:prior.prediction,executedNodeIds:prior.executedNodeIds??[],executedGraphIds:prior.executedGraphIds??[],...(prior.executionBudget?{executionBudget:prior.executionBudget}:{}),...(prior.nodeOutputs?{nodeOutputs:prior.nodeOutputs}:{}),...(prior.loopTrace?{loopTrace:prior.loopTrace}:{}),inputTokens:0,outputTokens:0,totalTokens:0,usageKnown:true}
+      : await retryWorkflow(() => runner(task), retryAttempts, attempts,retryScope);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Object.freeze({
@@ -96,7 +116,7 @@ async function evaluateOne(
   const providerUsage = aggregateUsage(run, attempts, prior);
   let evidence;
   try {
-    evidence = await scorer.score(task.id, run.answer);
+    evidence = await scorer.score(task.id, run.answer,prior);
     if (!Number.isFinite(evidence.score) || evidence.score < 0 || evidence.score > 1) {
       throw new Error(`Scorer returned invalid score: ${evidence.score}`);
     }
@@ -107,12 +127,14 @@ async function evaluateOne(
       score: 0, expected: expectedLabel(scorer, task.id), prediction: run.answer,
       normalizedExpected: "", normalizedPrediction: "", method: "judge-error",
       failureKind: "judge", error: error instanceof Error ? error.message : String(error),
+      ...(scorer.recoveryData?{judgeRecovery:scorer.recoveryData(task.id)??prior?.judgeRecovery}:{}),
       attempts: Object.freeze(attempts), usageKnown: run.usageKnown !== false && prior?.usageKnown !== false && attempts.every(value => value.usageKnown),
       ...providerUsage,
       ...(run.checkerAudits?.length ? { checkerAudits: run.checkerAudits } : {}),
       executedNodeIds: run.executedNodeIds, executedGraphIds: run.executedGraphIds,
       ...(run.nodeOutputs ? { nodeOutputs: run.nodeOutputs } : {}),
       ...(run.loopTrace ? { loopTrace: run.loopTrace } : {}),
+      ...(run.executionBudget?{executionBudget:run.executionBudget}:{}),
       latencyMs: Date.now() - started,
     });
   }
@@ -129,15 +151,20 @@ async function evaluateOne(
       executedNodeIds: run.executedNodeIds, executedGraphIds: run.executedGraphIds,
       ...(run.nodeOutputs ? { nodeOutputs: run.nodeOutputs } : {}),
       ...(run.loopTrace ? { loopTrace: run.loopTrace } : {}),
+      ...(run.executionBudget?{executionBudget:run.executionBudget}:{}),
     latencyMs: Date.now() - started,
   });
 }
 
 /** Retry only transient failures; preserve failed-attempt evidence and usage completeness. */
-async function retryWorkflow<T>(operation: () => Promise<T>, attempts: number, failures: NonNullable<CaseResult["attempts"]>[number][]): Promise<T> {
+async function retryWorkflow<T>(operation: () => Promise<T>, attempts: number, failures: NonNullable<CaseResult["attempts"]>[number][],scope:BenchmarkEvaluationOptions['workflowRetryScope']='invocation'): Promise<T> {
   const previousAttempts = failures.length;
+  const remaining=scope==='case-repeat'?Math.max(0,attempts-previousAttempts):attempts;
+  if(remaining===0)throw Error(`Workflow attempt budget exhausted (${previousAttempts}/${attempts}); no new workflow dispatched. Previous failure: ${failures.at(-1)?.error??'unavailable'}`);
   let latest: unknown;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
+  for (let attempt = 1; attempt <= remaining; attempt++) {
+    const caseBudget=automationBudgetScope.getStore();
+    if(attempt>1&&caseBudget&&(caseBudget.wallExpired||caseBudget.actorCalls>=AUTOMATION_EXECUTION_BUDGET.maxActorCalls))throw latest;
     try {
       return await operation();
     } catch (error) {
@@ -145,7 +172,7 @@ async function retryWorkflow<T>(operation: () => Promise<T>, attempts: number, f
       const message = error instanceof Error ? error.message : String(error);
       failures.push(Object.freeze({ attempt: previousAttempts + attempt, error: message,
         ...errorUsage(error), failureKind: classifyFailure(message) }));
-      if (attempt === attempts || !isTransient(message)) throw error;
+      if (attempt === remaining || !isTransient(message)||caseBudget&&(caseBudget.wallExpired||caseBudget.actorCalls>=AUTOMATION_EXECUTION_BUDGET.maxActorCalls)) throw error;
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
   }

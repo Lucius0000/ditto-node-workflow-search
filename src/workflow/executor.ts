@@ -4,6 +4,7 @@ import { baselineTextMessages } from "../benchmark/baseline-prompts.js";
 import { isDeepStrictEqual } from "node:util";
 import { isRawBaseline } from "./spec.js";
 import { validateOrganizationPlan } from "./organization.js";
+import { runOrganization } from './organization-executor.js';
 import { CODE_REVISE_OUTPUT_CONTRACT, checkerContract, validateCheckerCriteria, validateCheckerDependencies } from "./checker-policy.js";
 import { applyCheckerSemantics, type CheckedReflectionOutput, type ReflectionBinding } from "./checker-semantics.js";
 import type { Context, ContextItem as SharedContextItem } from "@codesoul-co/ditto/contracts";
@@ -93,6 +94,7 @@ export class WorkflowExecutor {
    * in execution; only `WorkflowNodeSpec.dependencies` become Graph dependencies.
    */
   async run(plan: AgentPlanSpec, task: BenchmarkTask, signal?: AbortSignal): Promise<AgentRunResult> {
+    if(task.dataset==='automationbench')return runOrganization(this.#runtime,this.#model,plan,task,signal);
     const nodesById = validatePlan(plan);
     if (plan.organization) {
       validateOrganizationPlan(plan);
@@ -494,6 +496,7 @@ function conditionMatches(
     case "not-equals": return !isDeepStrictEqual(value, condition.value);
     case "truthy": return Boolean(value);
     case "falsy": return !value;
+    default: throw Error('Pending-action conditions require the Automation organization executor');
   }
 }
 

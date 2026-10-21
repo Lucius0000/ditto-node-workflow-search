@@ -30,7 +30,6 @@ export interface ExperimentRuntimeOptions {
 /** npm Graph/Loop/Workers; injected transport uses AFlow's installed SDK. */
 export function createExperimentRuntime(settings: ProviderSettings, options: ExperimentRuntimeOptions = {}): ExperimentRuntime {
   const profile = options.profile ?? "math";
-  if (profile === "automationbench" && !options.memory) throw new Error("AutomationBench requires application-owned Memory resources");
   const sandbox = new Sandbox(process.cwd(), { network: [new URL(settings.baseUrl).origin], tools: options.tools?.map(tool => tool.name) ?? [] });
   const transport = options.provider ? undefined : new PythonTransport(settings, { profile });
   // Per-request timeouts/retries live in OpenAI's SDK (connect 5s, read 600s).

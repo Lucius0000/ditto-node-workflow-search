@@ -1,6 +1,7 @@
 import type { DeliberationMode, ReflectionMode } from "@codesoul-co/ditto/worker/infer";
 
-export const DATASETS = ["drop", "humaneval", "mbpp", "gsm8k", "math"] as const;
+export const AFLOW_DATASETS = ["drop", "humaneval", "mbpp", "gsm8k", "math"] as const;
+export const DATASETS=[...AFLOW_DATASETS,'automationbench'] as const;
 export type DatasetName = (typeof DATASETS)[number];
 
 export const STRATEGIES = ["cot", "long-cot", "tot", "got", "self-consistency"] as const;
@@ -11,7 +12,8 @@ export type SearchableNodeType =
   | "INFER.REASONING.SAMPLE"
   | "INFER.REASONING.TRAJECTORY"
   | "INFER.REASONING.REFLECT"
-  | "INFER.REASONING.DELIBERATE";
+  | "INFER.REASONING.DELIBERATE"
+  | "CONTEXT.UPDATE" | "INTERACTION.ACT.TOOL" | "INTERACTION.OBSERVE" | "INTERACTION.OUTPUT";
 
 export interface GenerationSpec {
   readonly temperature: number;
@@ -75,7 +77,11 @@ export interface DeliberateNodeSpec {
   };
 }
 
-export type WorkflowNodeSpec = ContextLoadNodeSpec | SampleNodeSpec | TrajectoryNodeSpec | ReflectNodeSpec | DeliberateNodeSpec;
+export type RuntimeNodeSpec = { [T in "CONTEXT.UPDATE" | "INTERACTION.ACT.TOOL" | "INTERACTION.OBSERVE" | "INTERACTION.OUTPUT"]: {
+  readonly id:string;readonly type:T;readonly graphId:'prepare'|'solve'|'refine';readonly dependencies:readonly string[];
+  readonly config:{readonly template:string};
+} }["CONTEXT.UPDATE" | "INTERACTION.ACT.TOOL" | "INTERACTION.OBSERVE" | "INTERACTION.OUTPUT"];
+export type WorkflowNodeSpec = ContextLoadNodeSpec | SampleNodeSpec | TrajectoryNodeSpec | ReflectNodeSpec | DeliberateNodeSpec | RuntimeNodeSpec;
 export type NodeProposal = Omit<SampleNodeSpec, "id"> | Omit<TrajectoryNodeSpec, "id"> | Omit<ReflectNodeSpec, "id"> | Omit<DeliberateNodeSpec, "id">;
 
 export interface SearchNodeStatistics {
@@ -108,7 +114,7 @@ export interface LocalGraphSpec {
 export type OutputCondition = {
   readonly sourceNodeId: string;
   readonly path?: readonly string[];
-  readonly operator: "equals" | "not-equals" | "truthy" | "falsy";
+  readonly operator: "equals" | "not-equals" | "truthy" | "falsy" | "has-pending-actions" | "no-pending-actions";
   readonly value?: unknown;
 };
 
@@ -157,6 +163,10 @@ export interface ScoreEvidence {
 }
 
 export interface CaseResult extends ScoreEvidence {
+  readonly automationBudgetProgress?:import('./workflow/automation-budget.js').AutomationBudgetProgress;
+  readonly executionBudget?: AutomationBudgetEvidence;
+  /** Private saved world for scorer-only recovery, never model feedback. */
+  readonly judgeRecovery?:unknown;
   readonly executedNodeIds?: readonly string[];
   readonly executedGraphIds?: readonly string[];
   readonly nodeOutputs?: Readonly<Record<string, unknown>>;
@@ -256,7 +266,18 @@ export interface GenerationOutcome {
   readonly parseError?: string;
 }
 
+export interface AutomationBudgetEvidence {
+  readonly policy:typeof import('./workflow/automation-budget.js').AUTOMATION_EXECUTION_BUDGET;
+  readonly reason:'actor-call-limit'|'wall-clock-limit';
+  readonly actorCalls:number;
+  readonly elapsedMs:number;
+  readonly cancelledInFlightModel:boolean;
+  readonly pendingActionIds:readonly string[];
+  readonly blockedGraphActorSlots?:number;
+  readonly outputKind:'supervisor-budget-not-model-final';
+}
 export interface AgentRunResult {
+  readonly executionBudget?:AutomationBudgetEvidence;
   readonly nodeOutputs?: Readonly<Record<string, unknown>>;
   readonly loopTrace?: readonly { readonly graphId: string; readonly visit: number; readonly nextGraphId?: string; readonly outputNodeId: string; readonly nodeOutputs?: Readonly<Record<string, unknown>> }[];
   readonly checkerAudits?: readonly CheckerAudit[];

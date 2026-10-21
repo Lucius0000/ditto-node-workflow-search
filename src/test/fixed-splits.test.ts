@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DATASETS } from "../domain.js";
+import { AFLOW_DATASETS as DATASETS } from "../domain.js";
 import { fixedSplitLock, MFLOW_DROP_KNOWN_PROMPT_OVERLAPS, verifySplitBytes } from "../benchmark/fixed-splits.js";
 import { loadBenchmark } from "../benchmark/registry.js";
 

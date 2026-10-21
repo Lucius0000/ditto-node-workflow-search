@@ -17,6 +17,7 @@
     "search:drop": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset drop",
     "search:humaneval": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset humaneval",
     "search:mbpp": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset mbpp",
+    "search:automationbench": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset automationbench",
     "search:gsm8k": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset gsm8k",
     "search:math": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset math"
   },

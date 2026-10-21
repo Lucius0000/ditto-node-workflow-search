@@ -11,6 +11,17 @@ export function selectParent(
   topK: number,
   random: SeededRandom,
 ): SearchTreeNode {
+  const {pool,probabilities}=parentDistribution(candidates,topK);
+  const sample = random.next();
+  let cumulative = 0;
+  for (let index = 0; index < pool.length; index++) {
+    cumulative += probabilities[index]!;
+    if (sample <= cumulative) return pool[index]!;
+  }
+  return pool.at(-1)!;
+}
+
+export function parentDistribution(candidates:readonly SearchTreeNode[],topK:number) {
   if (!candidates.length) throw new Error("Cannot select from an empty search frontier");
   if (!Number.isSafeInteger(topK) || topK < 1) throw new Error("topK must be a positive integer");
   if (candidates.some((candidate) => !candidate.evaluation)) {
@@ -31,13 +42,7 @@ export function selectParent(
     AFLOW_SELECTION_LAMBDA / pool.length + (1 - AFLOW_SELECTION_LAMBDA) * weight / total,
   );
 
-  const sample = random.next();
-  let cumulative = 0;
-  for (let index = 0; index < pool.length; index++) {
-    cumulative += probabilities[index]!;
-    if (sample <= cumulative) return pool[index]!;
-  }
-  return pool.at(-1)!;
+  return {pool,probabilities};
 }
 
 export function compareSearchNodes(left: SearchTreeNode, right: SearchTreeNode): number {

@@ -58,7 +58,7 @@ export class CaseRecovery {
     for (const result of prior) this.#cases.set(result.caseId, result);
   }
 
-  static async open(root: string, identityFields: unknown, operations: Readonly<Record<string, unknown>> = {}): Promise<CaseRecovery> {
+  static async open(root: string, identityFields: unknown, operations: Readonly<Record<string, unknown>> = {}, reuseCompleted = false): Promise<CaseRecovery> {
     const identity = createHash("sha256").update(JSON.stringify(identityFields)).digest("hex");
     await mkdir(root, { recursive: true });
     const path = join(root, `${identity}.json`);
@@ -69,7 +69,11 @@ export class CaseRecovery {
         identity: string; complete: boolean; cases: CaseResult[]; originalOperations?: Readonly<Record<string, unknown>>;
       };
       if (saved.identity !== identity || !Array.isArray(saved.cases)) throw new Error("Invalid case recovery identity");
-      if (!saved.complete) {
+      // A staged pending evaluation may have completed case persistence just
+      // before its search ledger commit was interrupted. This is still the same
+      // candidate, never an independent repeat. Other entry points keep the
+      // historical incomplete-only behavior.
+      if (!saved.complete || reuseCompleted) {
         prior = saved.cases;
         originalOperations = saved.originalOperations ?? operations;
       }

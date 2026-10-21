@@ -7,6 +7,7 @@ export interface ProviderSettings {
   readonly apiKey: string;
   readonly concurrency: number;
   readonly timeoutMs: number;
+  readonly expectedResponseModel?:string;
 }
 
 export function loadProviderSettings(env: NodeJS.ProcessEnv = process.env): ProviderSettings {
@@ -75,8 +76,10 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
   }
   const rawDataset = values.get("dataset") ?? "math";
   if (!isDataset(rawDataset)) throw new Error(`Unsupported dataset: ${rawDataset}`);
+  const staged=['humaneval','mbpp','automationbench'].includes(rawDataset);
+  if(rawCommand==='test'&&staged)throw Error('These staged workflows have no authorized Test entry; use frozen official full-Search evaluation');
   if (rawCommand === "search" && (values.has("top-k") || values.has("maximum-depth"))) {
-    throw new Error("Optimizer-directed search has no sampled parents or tree depth; remove --top-k and --maximum-depth");
+    throw new Error(staged?'The staged protocol fixes Top-4 parent selection and 24 active nodes; remove --top-k and --maximum-depth':'Optimizer-directed search has no sampled parents or tree depth; remove --top-k and --maximum-depth');
   }
   for (const flag of ["search-limit", "test-limit"]) {
     if (values.has(flag) && values.get(flag) !== "0") throw new Error(`${flag} must be 0: formal evaluation uses the complete pinned MFlow split without sampling`);
@@ -84,7 +87,11 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
   const runDir = values.get("run-dir");
   const resumeDir = values.get("resume-dir");
   const resumeRound = values.get("resume-round");
-  if ((resumeDir === undefined) !== (resumeRound === undefined) || (resumeDir && rawCommand !== "search")) throw new Error("search resume requires both --resume-dir and --resume-round");
+  if(staged){
+    if(resumeRound!==undefined)throw Error('Staged search resumes its saved pending candidate; do not select a historical resume-round');
+    if(values.has('seed')&&values.get('seed')!=='42'||values.has('patience')&&values.get('patience')!=='5')throw Error('Staged search fixes seed42 and convergence patience5');
+    for(const flag of ['test-repeats','test-concurrency','test-provider-concurrency'])if(values.has(flag))throw Error('Staged Search has Test0; remove Test configuration');
+  }else if ((resumeDir === undefined) !== (resumeRound === undefined) || (resumeDir && rawCommand !== "search")) throw new Error("search resume requires both --resume-dir and --resume-round");
   if (rawCommand === "test" && !runDir) throw new Error("test requires --run-dir <completed search run>");
   const searchConcurrency = integer(values.get("search-concurrency") ?? values.get("evaluation-concurrency")
     ?? process.env.DITTO_SEARCH_CONCURRENCY ?? "3", "search-concurrency", 1, 4_096);
@@ -95,12 +102,12 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
     dataset: rawDataset,
     dataDir: resolve(cwd, values.get("data-dir") ?? "data/datasets"),
     ...(runDir ? { runDir: resolve(cwd, runDir) } : {}),
-    ...(resumeDir ? { resumeDir: resolve(cwd, resumeDir), resumeRound: integer(resumeRound!, "resume-round", 0, 1_000) } : {}),
+    ...(resumeDir ? { resumeDir: resolve(cwd, resumeDir),...(!staged?{resumeRound: integer(resumeRound!, "resume-round", 0, 1_000)}:{}) } : {}),
     outputRoot: resolve(cwd, values.get("output-root") ?? "runs"),
     searchLimit: integer(values.get("search-limit") ?? "0", "search-limit", 0, 100_000),
     testLimit: integer(values.get("test-limit") ?? "0", "test-limit", 0, 100_000),
-    rounds: integer(values.get("rounds") ?? (["humaneval", "mbpp"].includes(rawDataset) ? "2" : "20"), "rounds", 1, 1_000),
-    repeats: integer(values.get("repeats") ?? (["humaneval", "mbpp"].includes(rawDataset) ? "1" : "5"), "repeats", 1, 20),
+    rounds: integer(values.get("rounds") ?? (["humaneval", "mbpp","automationbench"].includes(rawDataset) ? "10" : "20"), "rounds", 1, 1_000),
+    repeats: integer(values.get("repeats") ?? "5", "repeats", 1, 20),
     testRepeats: integer(values.get("test-repeats") ?? "3", "test-repeats", 1, 20),
     evaluationConcurrency: rawCommand === "search" ? searchConcurrency : testConcurrency,
     searchConcurrency,

@@ -137,6 +137,8 @@ export function validateNode(node: WorkflowNodeSpec): void {
     if (node.graphId !== "prepare" || node.dependencies.length !== 0) throw new Error("CONTEXT.LOAD must be dependency-free in prepare");
     return;
   }
+  if('template' in node.config)throw Error('Tool/context-update nodes require an explicit Automation organization');
+  if(!('generation' in node.config))throw Error('Inference generation is required');
   validateGeneration(node.config.generation);
   if (node.type === "INFER.REASONING.TRAJECTORY") {
     if (node.graphId !== "solve") throw new Error("TRAJECTORY belongs to solve");
@@ -155,7 +157,7 @@ export function validateNode(node: WorkflowNodeSpec): void {
     if (node.dependencies.length < 2) throw new Error("DELIBERATE requires at least two local candidate dependencies");
     return;
   }
-  if (node.graphId !== "refine" || !REFLECTION_MODES.has(node.config.mode)) throw new Error("Invalid REFLECT configuration");
+  if (node.type!== 'INFER.REASONING.REFLECT'||node.graphId !== "refine" || !REFLECTION_MODES.has(node.config.mode)) throw new Error("Invalid REFLECT configuration");
   if (node.config.criteria.length < 1 || node.config.criteria.length > 8 || node.config.criteria.some((item) => !item.trim())) {
     throw new Error("REFLECT requires 1..8 non-empty criteria");
   }

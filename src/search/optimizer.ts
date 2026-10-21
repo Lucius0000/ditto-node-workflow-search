@@ -55,7 +55,8 @@ export interface SearchResult {
   readonly bestLeaf: SearchTreeNode;
   readonly bestPlan: AgentPlanSpec;
   readonly bestPath: readonly SearchTreeNode[];
-  readonly stoppedBecause: "max-rounds" | "converged";
+  readonly stoppedBecause: "max-rounds" | "converged" | "time-budget";
+  readonly timeBudgetStop?: import('./time-budget.js').TimeBudgetStop;
 }
 
 export interface NodeWorkflowSearchOptions {

@@ -8,7 +8,15 @@ import { validateCheckerCriteria, validateCheckerDependencies } from './checker-
 import { baselinePrompts } from '../benchmark/baseline-prompts.js';
 import { EXPERIMENT_EXECUTION } from '../model-profile.js';
 
-export const ORGANIZATION_VERSION = 'code-node-configuration-v3';
+export const ORGANIZATION_VERSION = 'sampled-parent-staged-configuration-v4';
+export const AUTOMATION_INSTRUCTION = `Complete the requested business workflow in the official simulated APIs.
+Discover precise endpoints with api_search; read each endpoint's method, parameter names and response schema before api_fetch.
+api_fetch params and body must be JSON-encoded strings or null, never JSON objects. api_search requires an integer top_k. When a tool reports invalid arguments, correct the request and retry its intended action; preserve already successful effects.
+Resolve names to real record IDs; follow pagination and cross-application identifiers. Keep filters, exact values, recipients, formatting, dates and conditions from the user's task.
+Copy source field values exactly, including punctuation in phone numbers and identifiers. Do not normalize or reformat values unless the task explicitly requests it. Verify documented response field names before treating an absent or differently named field as a failed write.
+Inspect current state before writes; every agent shares this task's world. Reuse completed work, never recreate records or repeat successful sends.
+After each consequential write, inspect the resulting state and verify every requested postcondition. Repair concrete missing effects; do not replace tool execution with prose.
+Only API observations and the user's request are evidence. Grading references and hidden world snapshots are unavailable. Summarize completed effects, identifiers and any specific blocker concisely. Planning, role-design and ranking stages must follow their requested control format, propose concrete dependencies and checks, and never claim unexecuted effects.`;
 export interface NodeTemplate {
   readonly type: WorkflowNodeSpec['type'];
   readonly config: Readonly<Record<string, unknown>>;
@@ -16,16 +24,23 @@ export interface NodeTemplate {
 }
 /** Config fields follow the existing workflow Node contracts; generation is fixed. */
 export function nodeCatalog(dataset: OrganizationSpec['dataset']): Readonly<Record<string, NodeTemplate>> {
-  if (!['humaneval', 'mbpp'].includes(dataset)) throw Error('Code organization supports only HumanEval and MBPP');
+  if (!['humaneval', 'mbpp','automationbench'].includes(dataset)) throw Error('Organization supports only HumanEval, MBPP and AutomationBench');
   const generation = GENERATION;
-  const reflect = (mode: string): NodeTemplate => ({type:'INFER.REASONING.REFLECT', config:{generation,mode,criteria:['Check the public task requirements against the supplied code; do not invent requirements.']},description:'Assess or revise the explicitly wired target; no execution or private tests.'});
+  const reflect = (mode: string): NodeTemplate => ({type:'INFER.REASONING.REFLECT', config:{generation,mode,criteria:[dataset==='automationbench'?'Check the public task and observed tool evidence without claiming unobserved effects.':'Check the public task requirements against the supplied code; do not invent requirements.']},description:'Assess or revise the explicitly wired target; no execution or private tests.'});
   const deliberate = (mode: string): NodeTemplate => ({type:'INFER.REASONING.DELIBERATE',config:{generation,mode},description:'Compare at least two explicitly wired answer results.'});
   return {
     context:{type:'CONTEXT.LOAD',config:{includeTaskMetadata:false},description:'Load the original public task.'},
-    sample:{type:'INFER.REASONING.SAMPLE',config:{generation,role:'solver',instruction:baselinePrompts(dataset)!.agent},description:'Generate code from the public task and explicitly wired evidence.'},
-    cot:{type:'INFER.REASONING.TRAJECTORY',config:{generation,instruction:'Solve the original public coding task using the supplied evidence.',strategy:'cot',options:{rounds:1},maxSteps:EXPERIMENT_EXECUTION.maxSteps},description:'Choose any supported reasoning strategy and its legal options; no tools.'},
+    sample:{type:'INFER.REASONING.SAMPLE',config:{generation,role:'solver',instruction:dataset==='automationbench'?AUTOMATION_INSTRUCTION:baselinePrompts(dataset)!.agent},description:'Generate an answer from the public task and explicitly wired evidence.'},
+    cot:{type:'INFER.REASONING.TRAJECTORY',config:{generation,instruction:dataset==='automationbench'?'Reason about the original public automation task using actual supplied observations; do not claim unexecuted effects.':'Solve the original public coding task using the supplied evidence.',strategy:'cot',options:{rounds:1},maxSteps:EXPERIMENT_EXECUTION.maxSteps},description:'Choose any supported reasoning strategy and its legal options; no tools.'},
     critique:reflect('critique'),verify:reflect('verify'),revise:reflect('revise'),
     select:deliberate('select'),merge:deliberate('merge'),consensus:deliberate('consensus'),debate:deliberate('debate'),
+    ...(dataset==='automationbench'?{
+      actor:{type:'INFER.REASONING.SAMPLE' as const,config:{generation,role:'solver',instruction:AUTOMATION_INSTRUCTION},description:'Infer with the fixed official tool schemas and explicitly bound context.'},
+      act:{type:'INTERACTION.ACT.TOOL' as const,config:{template:'act'},description:'Execute one directly wired pending official action once.'},
+      observe:{type:'INTERACTION.OBSERVE' as const,config:{template:'observe'},description:'Convert the real ACT result, retaining its callId.'},
+      update:{type:'CONTEXT.UPDATE' as const,config:{template:'update'},description:'Append directly wired assistant requests and real observations to context.'},
+      output:{type:'INTERACTION.OUTPUT' as const,config:{template:'output'},description:'Deliver the explicitly wired result without scoring the world.'},
+    }:{}),
   };
 }
 
@@ -35,6 +50,10 @@ export function nodeDefinition(dataset:OrganizationSpec['dataset'], binding:Orga
   if(!template)throw Error('Unknown node template');
   if(binding.config!==undefined&&(!object(binding.config)))throw Error('Node config must be an object');
   const config={...structuredClone(template.config),...structuredClone(binding.config??{})};
+  if(!template.type.startsWith('INFER.')&&template.type!=='CONTEXT.LOAD'){
+    if(dataset!=='automationbench'||!isDeepStrictEqual(config,template.config))throw Error('Fixed tool/context operation configuration cannot change');
+    return {id:binding.id,type:template.type,config,dependencies:[...binding.dependencies],graphId} as unknown as WorkflowNodeSpec;
+  }
   const fields:Record<string,readonly string[]>={
     'CONTEXT.LOAD':['includeTaskMetadata'],
     'INFER.REASONING.SAMPLE':['role','instruction','generation'],
@@ -59,11 +78,11 @@ export function bindingMode(dataset:OrganizationSpec['dataset'],binding:Organiza
 }
 export function guaranteesResult(dataset:OrganizationSpec['dataset'],binding:OrganizationSpec['nodes'][number]):boolean {
   const type=nodeCatalog(dataset)[binding.template]!.type;
-  return ['INFER.REASONING.SAMPLE','INFER.REASONING.TRAJECTORY','INFER.REASONING.DELIBERATE'].includes(type)||type==='INFER.REASONING.REFLECT'&&bindingMode(dataset,binding)==='revise';
+  return ['INFER.REASONING.SAMPLE','INFER.REASONING.TRAJECTORY','INFER.REASONING.DELIBERATE','INTERACTION.OUTPUT'].includes(type)||type==='INFER.REASONING.REFLECT'&&bindingMode(dataset,binding)==='revise';
 }
 
 const safeId = /^[a-z][a-z0-9-]{0,63}$/;
-const operators = new Set(['equals', 'not-equals', 'truthy', 'falsy']);
+const operators = new Set(['equals', 'not-equals', 'truthy', 'falsy','has-pending-actions','no-pending-actions']);
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
 function keys(v: Record<string, any>, allowed: readonly string[]): void {
   if (Object.keys(v).some(k => !allowed.includes(k))) throw new Error('Organization contains an unsupported field');
@@ -72,7 +91,7 @@ function keys(v: Record<string, any>, allowed: readonly string[]): void {
 export function validateOrganization(value: unknown): asserts value is OrganizationSpec {
   if (!object(value)) throw new Error('Organization must be an object');
   keys(value, ['version', 'dataset', 'nodes', 'graphs', 'entryGraphId', 'transitions', 'outputNodeId', 'outputByGraph']);
-  if (value.version !== 1 || !['humaneval', 'mbpp'].includes(value.dataset)) throw new Error('Unknown organization protocol');
+  if (value.version !== 1 || !['humaneval', 'mbpp','automationbench'].includes(value.dataset)) throw new Error('Unknown organization protocol');
   const catalog = nodeCatalog(value.dataset);
   if (!Array.isArray(value.nodes) || value.nodes.length < 1 || value.nodes.length > 24) throw new Error('Organization needs 1..24 real nodes');
   const nodes = new Map<string, OrganizationSpec['nodes'][number]>();
@@ -97,6 +116,7 @@ export function validateOrganization(value: unknown): asserts value is Organizat
   for (const g of value.graphs) {
     if (!object(g)) throw new Error('Invalid graph'); keys(g, ['id', 'nodeIds']);
     if (!safeId.test(g.id) || graphIds.has(g.id) || !Array.isArray(g.nodeIds) || !g.nodeIds.length) throw new Error('Invalid/duplicate graph');
+    if(g.nodeIds.filter((id:string)=>nodes.get(id)?.template==='act').length>1)throw Error('Sequential ACT operations require separate Graph commits to consume pending callIds exactly once');
     graphIds.add(g.id); const seen = new Set<string>();
     for (const id of g.nodeIds) {
       const n = nodes.get(id); if (!n || owner.has(id)) throw new Error('Unknown or multiply assigned node');
@@ -114,6 +134,7 @@ export function validateOrganization(value: unknown): asserts value is Organizat
     if (!object(c)) throw new Error('Invalid condition'); keys(c, ['sourceNodeId', 'path', 'operator', 'value']);
     if (!nodes.has(c.sourceNodeId) || !operators.has(c.operator) || (c.path !== undefined && (!Array.isArray(c.path) || c.path.length > 8 || c.path.some((p: unknown) => typeof p !== 'string' || ['__proto__','constructor','prototype'].includes(p))))) throw new Error('Invalid condition source/operator/path');
     const sourceTemplate = nodes.get(c.sourceNodeId)!.template;
+    if(['has-pending-actions','no-pending-actions'].includes(c.operator)&&(value.dataset!=='automationbench'||sourceTemplate!=='actor'||c.path!==undefined||c.value!==undefined))throw Error('Pending-action conditions require the directly observed Automation actor');
     if (catalog[sourceTemplate]!.type==='INFER.REASONING.REFLECT' && c.path?.length) {
       if (!['assessment','issues','revisedResult','usage'].includes(c.path[0]))
         throw new Error(`Unknown REFLECT output path ${JSON.stringify(c.path)} on ${c.sourceNodeId}; the pass flag is at ["assessment","passed"], not ["passed"].`);
@@ -149,7 +170,7 @@ export function validateOrganization(value: unknown): asserts value is Organizat
         throw new Error('Branch output must guarantee a result, never an optional checker revision');
     }
   }
-  const noProgress = new Set(value.graphs.filter((g: any) => !g.nodeIds.some((id: string) => catalog[nodes.get(id)!.template]!.type.startsWith('INFER.'))).map((g: any) => g.id));
+  const noProgress = new Set(value.graphs.filter((g: any) => !g.nodeIds.some((id: string) => catalog[nodes.get(id)!.template]!.type.startsWith('INFER.')||nodes.get(id)!.template==='act')).map((g: any) => g.id));
   const active = new Set<string>(), done = new Set<string>();
   const checkCycle = (id: string): void => {
     if (!noProgress.has(id) || done.has(id)) return;
@@ -178,6 +199,11 @@ export function validateOrganization(value: unknown): asserts value is Organizat
       if (n.dependencies.some(d => !known.has(d))) throw new Error(`Node ${id} has an unavailable dependency`);
       if (catalog[n.template]!.type==='INFER.REASONING.REFLECT' && !n.dependencies.some(id=>guaranteesResult(value.dataset,nodes.get(id)!))) throw new Error('Reflection requires an explicit result dependency');
       if (catalog[n.template]!.type==='INFER.REASONING.DELIBERATE' && n.dependencies.filter(id=>guaranteesResult(value.dataset,nodes.get(id)!)).length < 2) throw new Error('Deliberation requires two explicit results');
+      const types=n.dependencies.map(id=>nodes.get(id)!.template);
+      if(n.template==='act'&&!types.includes('actor'))throw Error('ACT requires a directly wired actor');
+      if(n.template==='observe'&&types.filter(t=>t==='act').length!==1)throw Error('OBSERVE requires exactly one directly wired ACT');
+      if(n.template==='update'&&!types.some(t=>t==='context'||t==='update'))throw Error('UPDATE requires a directly wired context');
+      if(n.template==='output'&&!n.dependencies.some(id=>guaranteesResult(value.dataset,nodes.get(id)!)&&nodes.get(id)!.template!=='output'))throw Error('OUTPUT requires a directly wired answer');
       known.add(id);
     }
     const t = value.transitions[g.id];
@@ -217,5 +243,13 @@ export function validateOrganizationPlan(plan: AgentPlanSpec): void {
   if (!plan.organization || !isDeepStrictEqual(plan, buildOrganizationPlan(plan.organization, plan.leafSearchNodeId))) throw new Error('Plan differs from its fixed capability catalog or declared organization');
 }
 export function initialOrganization(dataset: OrganizationSpec['dataset']): OrganizationSpec {
+  if(dataset==='automationbench')return {version:1,dataset,nodes:[
+    {id:'context',template:'context',dependencies:[]},{id:'actor',template:'actor',dependencies:['context'],feedback:['update']},
+    {id:'act',template:'act',dependencies:['actor']},{id:'observe',template:'observe',dependencies:['act']},
+    {id:'update',template:'update',dependencies:['context','actor','observe'],feedback:['update']},{id:'output',template:'output',dependencies:['actor']},
+  ],graphs:[{id:'prepare',nodeIds:['context']},{id:'reason',nodeIds:['actor']},{id:'tools',nodeIds:['act','observe','update']},{id:'finish',nodeIds:['output']}],entryGraphId:'prepare',transitions:{
+    prepare:{kind:'next',graphId:'reason'},reason:{kind:'switch',cases:[{when:{sourceNodeId:'actor',operator:'has-pending-actions'},graphId:'tools'}],defaultGraphId:'finish'},
+    tools:{kind:'switch',cases:[{when:{sourceNodeId:'actor',operator:'has-pending-actions'},graphId:'tools'}],defaultGraphId:'reason'},finish:{kind:'end'},
+  },outputNodeId:'output'};
   return {version:1,dataset,nodes:[{id:'context',template:'context',dependencies:[]},{id:'sample-1',template:'sample',dependencies:['context'],config:{instruction:baselinePrompts(dataset)!.agent}}],graphs:[{id:'solve',nodeIds:['context','sample-1']}],entryGraphId:'solve',transitions:{solve:{kind:'end'}},outputNodeId:'sample-1'};
 }

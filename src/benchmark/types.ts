@@ -21,11 +21,12 @@ export interface BenchmarkLoadOptions {
   readonly limit?: number;
   readonly seed?: number;
   readonly codeJudge?: CodeJudge;
+  readonly artifactDir?:string;
 }
 
 /** Public provenance only: no reference answers or private judge material. */
 export interface BenchmarkIdentity {
-  readonly protocol: "aflow-fixed-v1" | "fixture";
+  readonly protocol: "aflow-fixed-v1" | "fixture" | 'automationbench-public-simple-v1';
   readonly dataMode: "formal" | "fixture";
   readonly baselineRepository: string;
   readonly baselineCommit: string;
@@ -49,8 +50,12 @@ export interface BenchmarkEvaluationOptions {
   readonly repeats?: number;
   readonly concurrency?: number;
   readonly retryAttempts?: number;
+  /** Legacy callers retain per-invocation retries; staged runs bind a total per case/repeat. */
+  readonly workflowRetryScope?:'invocation'|'case-repeat';
   /** Caller must verify the complete execution identity before supplying recovery records. */
   readonly priorCases?: readonly CaseResult[];
+  /** Bound to the same run/plan identity as case recovery; writes precede actor dispatch. */
+  readonly automationBudgetPersistence?:import('../workflow/automation-budget.js').AutomationBudgetPersistence;
   /** Called after each case finishes; useful for live progress without exposing private judge data. */
   readonly onCase?: (progress: {
     readonly completed: number;
@@ -77,7 +82,8 @@ export interface BenchmarkAdapter {
 }
 
 export interface PrivateScorer {
-  score(taskId: string, prediction: string): Promise<ScoreEvidence>;
+  score(taskId: string, prediction: string, prior?:CaseResult): Promise<ScoreEvidence>;
+  recoveryData?(taskId:string):unknown;
   expectedLabel(taskId: string): string;
 }
 

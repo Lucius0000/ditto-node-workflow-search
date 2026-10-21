@@ -17,11 +17,12 @@ export interface ConstructionBranch {
 export interface NodeExpansion {
   readonly baseBranchId:string;
   readonly anchorNodeId:string;
-  readonly operation:'add'|'replace'|'rewire'|'remove'|'organize';
+  readonly operation:'add'|'replace'|'rewire'|'remove'|'organize'|'submit';
   readonly node?:Binding;
   readonly removeNodeId?:string;
-  /** Omit while constructing. Supply the complete Graph/Loop wiring to evaluate. */
+  /** Assembly alone never submits a candidate. */
   readonly assembly?:Assembly;
+  readonly submit?:boolean;
 }
 export interface WorkflowEvaluation {
   readonly id:string;
@@ -31,9 +32,24 @@ export interface WorkflowEvaluation {
   readonly plan:AgentPlanSpec;
   readonly topologyHash:string;
   readonly evaluation:EvaluationSummary;
+  readonly parentEvaluationId?:string;
+}
+export interface ParentSelection {
+  readonly parentEvaluationId:string;
+  readonly parentBranchId:string;
+  readonly pool:readonly {readonly id:string;readonly score:number;readonly probability:number}[];
+  readonly randomBefore:number;
+  readonly randomAfter:number;
+  readonly sample:number;
+}
+export interface CandidateDraft {
+  readonly selection:ParentSelection;
+  readonly branchId:string;
+  readonly edits:readonly NodeExpansion[];
+  readonly submitted:boolean;
 }
 export interface NodeConstructionState {
-  readonly version:1;
+  readonly version:2;
   readonly dataset:OrganizationSpec['dataset'];
   readonly branches:readonly ConstructionBranch[];
   readonly evaluations:readonly WorkflowEvaluation[];
@@ -43,6 +59,7 @@ export interface NodeConstructionState {
   readonly nextEvaluation:number;
   readonly constructionStepsSinceEvaluation:number;
   readonly pending?:{readonly branchId:string;readonly plan:AgentPlanSpec};
+  readonly draft?:CandidateDraft;
 }
 const object=(v:unknown):v is Record<string,any>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 const allowed=(v:Record<string,any>,keys:readonly string[])=>{if(Object.keys(v).some(k=>!keys.includes(k)))throw Error('Unsupported construction field; only fixed node bindings and assembly are allowed');};
@@ -50,8 +67,10 @@ const validId=(v:unknown):v is string=>typeof v==='string'&&/^[a-z][a-z0-9-]{0,6
 
 export function validateExpansion(value:unknown):asserts value is NodeExpansion {
   if(!object(value))throw Error('Expansion must be an object');
-  allowed(value,['baseBranchId','anchorNodeId','operation','node','removeNodeId','assembly']);
-  if(!validId(value.baseBranchId)||!validId(value.anchorNodeId)||!['add','replace','rewire','remove','organize'].includes(value.operation))throw Error('Invalid construction branch/anchor/operation');
+  allowed(value,['baseBranchId','anchorNodeId','operation','node','removeNodeId','assembly','submit']);
+  if(!validId(value.baseBranchId)||!validId(value.anchorNodeId)||!['add','replace','rewire','remove','organize','submit'].includes(value.operation))throw Error('Invalid construction branch/anchor/operation');
+  if(value.submit!==undefined&&typeof value.submit!=='boolean')throw Error('submit must be boolean');
+  if(value.operation==='submit'&&(value.submit!==true||value.assembly!==undefined))throw Error('Standalone submit requires submit:true and uses the existing draft assembly');
   if(['add','replace','rewire'].includes(value.operation)){
     if(!object(value.node))throw Error('Node operation requires exactly one real node binding');
     allowed(value.node,['id','template','dependencies','feedback','targetNodeId','config']);
@@ -66,12 +85,47 @@ export function validateExpansion(value:unknown):asserts value is NodeExpansion 
   if(value.assembly!==undefined){
     if(!object(value.assembly))throw Error('Invalid Graph/Loop assembly');
     allowed(value.assembly,['graphs','entryGraphId','transitions','outputNodeId','outputByGraph']);
+    const a=value.assembly;
+    if(!Array.isArray(a.graphs)||a.graphs.length>24||!validId(a.entryGraphId)||!validId(a.outputNodeId)||!object(a.transitions))throw Error('Invalid draft assembly shape');
+    for(const g of a.graphs){
+      if(!object(g))throw Error('Invalid draft graph');allowed(g,['id','nodeIds']);
+      if(!validId(g.id)||!Array.isArray(g.nodeIds)||g.nodeIds.some((id:unknown)=>!validId(id))||new Set(g.nodeIds).size!==g.nodeIds.length)throw Error('Invalid draft graph members');
+    }
+    const condition=(c:unknown)=>{
+      if(!object(c))throw Error('Invalid draft condition');allowed(c,['sourceNodeId','operator','path','value']);
+      if(!validId(c.sourceNodeId)||!['equals','not-equals','truthy','falsy','has-pending-actions','no-pending-actions'].includes(c.operator)||c.path!==undefined&&(!Array.isArray(c.path)||c.path.some((p:unknown)=>typeof p!=='string'||['__proto__','prototype','constructor'].includes(p))))throw Error('Invalid draft condition fields');
+    };
+    for(const [id,t] of Object.entries(a.transitions)){
+      if(!validId(id)||!object(t))throw Error('Invalid draft transition');
+      if(t.kind==='end')allowed(t,['kind']);
+      else if(t.kind==='next'){allowed(t,['kind','graphId']);if(!validId(t.graphId))throw Error('Invalid draft next target');}
+      else if(t.kind==='switch'){
+        allowed(t,['kind','cases','defaultGraphId']);if(!Array.isArray(t.cases)||t.cases.length>24)throw Error('Invalid draft switch');
+        for(const c of t.cases){if(!object(c))throw Error('Invalid draft switch case');allowed(c,['when','graphId']);condition(c.when);if(!validId(c.graphId))throw Error('Invalid draft switch target');}
+        if(t.defaultGraphId!==undefined&&!validId(t.defaultGraphId))throw Error('Invalid draft default target');
+      }else if(t.kind==='repeat'){
+        allowed(t,['kind','graphId','maxVisits','until','nextGraphId']);condition(t.until);
+        if(!validId(t.graphId)||!Number.isSafeInteger(t.maxVisits)||t.maxVisits<1||t.nextGraphId!==undefined&&!validId(t.nextGraphId))throw Error('Invalid draft repeat');
+      }else throw Error('Invalid draft transition kind');
+    }
+    if(a.outputByGraph!==undefined&&(!object(a.outputByGraph)||Object.entries(a.outputByGraph).some(([g,n])=>!validId(g)||!validId(n))))throw Error('Invalid draft delivery mapping');
   }
+}
+
+/** An explicit commit of an unchanged binding is submission, never a new edit. */
+export function normalizeDraftSubmission(base:ConstructionBranch,draft:CandidateDraft|undefined,proposal:NodeExpansion):NodeExpansion {
+  validateExpansion(proposal);
+  if(proposal.operation!=='replace'||proposal.submit!==true||proposal.assembly!==undefined||proposal.removeNodeId!==undefined
+    ||!draft||draft.submitted||draft.edits.length===0||draft.branchId!==base.id||proposal.baseBranchId!==base.id
+    ||base.id===draft.selection.parentBranchId||!Object.hasOwn(base.vertexByNode,proposal.anchorNodeId)
+    ||!isDeepStrictEqual(proposal.node,base.nodes.find(n=>n.id===proposal.anchorNodeId)))return proposal;
+  return {baseBranchId:proposal.baseBranchId,anchorNodeId:proposal.anchorNodeId,operation:'submit',submit:true};
 }
 
 export function organizationFor(dataset:OrganizationSpec['dataset'],branch:ConstructionBranch):OrganizationSpec {
   if(!branch.assembly)throw Error('Construction is not assembled into an executable workflow');
-  return {version:1,dataset,nodes:branch.nodes,...branch.assembly};
+  const a=branch.assembly;
+  return {version:1,dataset,nodes:branch.nodes,graphs:a.graphs,entryGraphId:a.entryGraphId,transitions:a.transitions,outputNodeId:a.outputNodeId,...(a.outputByGraph?{outputByGraph:a.outputByGraph}:{})};
 }
 
 /** Ignore cosmetic instance/graph renames, retain dependency order and control semantics. */
@@ -97,7 +151,11 @@ export function executionTopologyHash(spec:OrganizationSpec):string {
     else v={...t,graphId:gs.get(t.graphId),until:condition(t.until),...(t.nextGraphId?{nextGraphId:gs.get(t.nextGraphId)}:{})};
     return [gs.get(id)!,v];
   }));
-  return organizationHash({...spec,nodes:spec.nodes.map(n=>({...n,template:nodeCatalog(spec.dataset)[n.template]!.type,config:nodeDefinition(spec.dataset,n,'hash').config,id:ns.get(n.id)!,dependencies:n.dependencies.map(d=>ns.get(d)!),
+  return organizationHash({...spec,nodes:spec.nodes.map(n=>({...n,template:nodeCatalog(spec.dataset)[n.template]!.type,
+    // Actor and plain SAMPLE share a Core contract/config but bind different
+    // capabilities and pending-action semantics in the Automation executor.
+    ...(n.template==='actor'?{bindingCapability:'fixed-official-tool-actor'}:{}),
+    config:nodeDefinition(spec.dataset,n,'hash').config,id:ns.get(n.id)!,dependencies:n.dependencies.map(d=>ns.get(d)!),
     ...(n.feedback?{feedback:n.feedback.map(d=>ns.get(d)!)}:{}),...(n.targetNodeId?{targetNodeId:ns.get(n.targetNodeId)!}:{})})),
     graphs:graphOrder.map(id=>({id:gs.get(id)!,nodeIds:spec.graphs.find(g=>g.id===id)!.nodeIds.map(n=>ns.get(n)!)})),
     entryGraphId:gs.get(spec.entryGraphId)!,transitions,outputNodeId:ns.get(spec.outputNodeId)!,
@@ -122,11 +180,9 @@ export function prepareExpansion(dataset:OrganizationSpec['dataset'],base:Constr
     if(proposal.operation==='rewire'&&nodes[index]!.template!==n.template)throw Error('rewire cannot change template; use replace');
     if(n.dependencies.includes(n.id))throw Error('A node cannot depend on its own current output');
     const sources=n.dependencies.map(id=>nodes.find(old=>old.id===id));
-    if(sources.some(d=>!d))throw Error(`New node binding references unknown input ${JSON.stringify(n.dependencies.filter((_,i)=>!sources[i]))}; add required sources first or rewire a later node version`);
     const type=catalog[n.template]!.type;
     if(type==='INFER.REASONING.REFLECT'&&(!n.targetNodeId||!n.dependencies.includes(n.targetNodeId)))throw Error('Reflection requires an explicit direct targetNodeId');
-    if(type==='INFER.REASONING.REFLECT'&&!guaranteesResult(dataset,nodes.find(d=>d.id===n.targetNodeId)!))throw Error('Reflection target must guarantee an answer');
-    if(type==='INFER.REASONING.DELIBERATE'&&sources.filter(d=>guaranteesResult(dataset,d!)).length<2)throw Error('Deliberation requires two guaranteed answer sources');
+    if(type==='INFER.REASONING.REFLECT'&&sources.some(d=>d!==undefined&&d.id===n.targetNodeId&&!guaranteesResult(dataset,d)))throw Error('Reflection target must guarantee an answer');
     if(n.targetNodeId!==undefined&&type!=='INFER.REASONING.REFLECT')throw Error('Only reflection nodes have targetNodeId');
     const resolved=nodeDefinition(dataset,n,'unassembled');
     if(proposal.operation==='rewire'&&!isDeepStrictEqual(resolved.config,nodeDefinition(dataset,nodes[index]!,'unassembled').config))throw Error('rewire cannot change config; use replace');
@@ -142,11 +198,16 @@ export function prepareExpansion(dataset:OrganizationSpec['dataset'],base:Constr
   }
   if(nodes.length<1||nodes.length>maxNodes)throw Error(`Construction has ${nodes.length} active nodes, maximum ${maxNodes}. Assemble/evaluate an existing construction, remove nodes, or fork another branch instead of continuing to add.`);
   const branch:ConstructionBranch={id:branchId,baseBranchId:base.id,leafVertexId:definition?vertexId:parentVertexId,nodes,vertexByNode:vertices,
-    ...(proposal.assembly?{assembly:structuredClone(proposal.assembly)}:{})};
+    ...(proposal.assembly??base.assembly?{assembly:structuredClone(proposal.assembly??base.assembly!)}:{})};
   // Unassembled states can contain dangling links during a multi-step rewrite;
   // complete assembly must pass every original execution/availability check.
   let plan:AgentPlanSpec|undefined;
-  if(branch.assembly){const spec=organizationFor(dataset,branch);plan=buildOrganizationPlan(spec);requireExplicitReflectionTargets(spec);}
+  if(branch.assembly){
+    const spec=organizationFor(dataset,branch);
+    try{plan=buildOrganizationPlan(spec);requireExplicitReflectionTargets(spec);}
+    catch(error){if(proposal.submit)throw error;}
+  }
+  if(proposal.submit&&!plan)throw Error('Cannot submit an unclosed draft: complete valid Graph/Loop assembly is required');
   return {branch,...(definition?{node:definition,parentVertexId}:{}),...(plan?{plan}:{})};
 }
 

@@ -14,7 +14,7 @@ import {baselinePrompts} from '../benchmark/baseline-prompts.js';
 const initial=initialOrganization('humaneval');
 const assembly:Assembly={graphs:initial.graphs,entryGraphId:initial.entryGraphId,transitions:initial.transitions,outputNodeId:initial.outputNodeId};
 const base:ConstructionBranch={id:'branch-000002',baseBranchId:'branch-000001',leafVertexId:'node-000002',nodes:initial.nodes,vertexByNode:{context:'node-000001','sample-1':'node-000002'},assembly};
-const edit=(instruction:string,branch=base):NodeExpansion=>({baseBranchId:branch.id,anchorNodeId:'sample-1',operation:'replace',node:{id:'sample-1',template:'sample',dependencies:['context'],config:{instruction}},assembly:branch.assembly??assembly});
+const edit=(instruction:string,branch=base):NodeExpansion=>({baseBranchId:branch.id,anchorNodeId:'sample-1',operation:'replace',submit:true,node:{id:'sample-1',template:'sample',dependencies:['context'],config:{instruction}},assembly:branch.assembly??assembly});
 function summary(score:number):EvaluationSummary {
   return {score,standardDeviation:0,repeats:1,examples:1,successfulRuns:1,failedRuns:0,timeoutRuns:0,wrongRuns:score===0?1:0,inputTokens:0,outputTokens:0,totalTokens:0,durationMs:0,results:[]};
 }
@@ -27,7 +27,7 @@ test('code initial plans expose exact baseline prompts and do not enable other d
     assert.equal((plan.nodes.find(n=>n.id==='sample-1')!.config as {instruction:string}).instruction,baselinePrompts(dataset)!.agent);
     assert.equal(plan.nodes.filter(n=>n.type.startsWith('INFER')).length,1);
   }
-  assert.throws(()=>nodeCatalog('math' as 'humaneval'),/only HumanEval and MBPP/);
+  assert.throws(()=>nodeCatalog('math' as 'humaneval'),/only HumanEval, MBPP and AutomationBench/);
 });
 
 test('one replacement changes one node, preserves earlier immutable versions and materializes config',()=>{
@@ -99,11 +99,11 @@ test('baseline plus two unique valid candidates count three evaluations includin
 
 test('unassembled construction persists and resumes before consuming a candidate',async()=>{
   let saved:SearchResumeState|undefined;
-  await assert.rejects(new NodeTreeWorkflowSearch({dataset:'humaneval',rounds:1,patience:5,evaluate:async()=>summary(.2),proposer:{async propose(r){const p=edit('Partial candidate',latest(r));const {assembly: omitted,...partial}=p;return partial;}},callbacks:{async state(s){saved=structuredClone(s);if(s.nodeConstruction!.constructionStepsSinceEvaluation===1)throw Error('interrupt partial');}}}).run(),/interrupt partial/);
+  await assert.rejects(new NodeTreeWorkflowSearch({dataset:'humaneval',rounds:1,patience:5,evaluate:async()=>summary(.2),proposer:{async propose(r){const p=edit('Partial candidate',latest(r));const {assembly: omitted,submit:unsubmitted,...partial}=p;return partial;}},callbacks:{async state(s){saved=structuredClone(s);if(s.nodeConstruction!.constructionStepsSinceEvaluation===1)throw Error('interrupt partial');}}}).run(),/interrupt partial/);
   assert.equal(saved!.completedRounds,0);assert.equal(saved!.nodeConstruction!.pending,undefined);
-  const branch=saved!.nodeConstruction!.branches.at(-1)!;assert.equal(branch.assembly,undefined);
+  const branch=saved!.nodeConstruction!.branches.at(-1)!;assert.ok(branch.assembly,'runnable assembly is retained without implicitly submitting');
   let count=0;
-  await new NodeTreeWorkflowSearch({dataset:'humaneval',rounds:1,patience:5,resume:saved!,proposer:{async propose(){return {baseBranchId:branch.id,anchorNodeId:'sample-1',operation:'organize',assembly};}},evaluate:async()=>{count++;return summary(0);}}).run();
+  await new NodeTreeWorkflowSearch({dataset:'humaneval',rounds:1,patience:5,resume:saved!,proposer:{async propose(){return {baseBranchId:branch.id,anchorNodeId:'sample-1',operation:'submit',submit:true};}},evaluate:async()=>{count++;return summary(0);}}).run();
   assert.equal(count,1,'only the newly assembled candidate is evaluated on recovery');
 });
 
