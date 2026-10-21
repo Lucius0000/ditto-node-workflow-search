@@ -3,7 +3,8 @@ import { EXPERIMENT_EXECUTION } from "../model-profile.js";
 import { baselineTextMessages } from "../benchmark/baseline-prompts.js";
 import { isDeepStrictEqual } from "node:util";
 import { isRawBaseline } from "./spec.js";
-import { checkerContract, validateCheckerCriteria, validateCheckerDependencies } from "./checker-policy.js";
+import { validateOrganizationPlan } from "./organization.js";
+import { CODE_REVISE_OUTPUT_CONTRACT, checkerContract, validateCheckerCriteria, validateCheckerDependencies } from "./checker-policy.js";
 import { applyCheckerSemantics, type CheckedReflectionOutput, type ReflectionBinding } from "./checker-semantics.js";
 import type { Context, ContextItem as SharedContextItem } from "@codesoul-co/ditto/contracts";
 import {
@@ -93,7 +94,11 @@ export class WorkflowExecutor {
    */
   async run(plan: AgentPlanSpec, task: BenchmarkTask, signal?: AbortSignal): Promise<AgentRunResult> {
     const nodesById = validatePlan(plan);
-    validateCheckerDependencies(plan.graphs.flatMap(graph => graph.nodeIds.map(id => nodesById.get(id)!)));
+    if (plan.organization) {
+      validateOrganizationPlan(plan);
+      if (plan.organization.dataset !== task.dataset) throw new Error("Organization dataset differs from the public task dataset");
+    }
+    else validateCheckerDependencies(plan.graphs.flatMap(graph => graph.nodeIds.map(id => nodesById.get(id)!)));
     for (const node of plan.nodes) if (node.type === "INFER.REASONING.REFLECT") validateCheckerCriteria(task.dataset, node.config.criteria);
     const compiled = compileGraphs(plan, nodesById, this.#model);
     const graphOptions = signal ? { signal } : {};
@@ -103,9 +108,14 @@ export class WorkflowExecutor {
       maxIterations: EXPERIMENT_EXECUTION.maxIterations,
       *plan(loopTask) {
         const state = createExecutionState();
+        const loopTrace: NonNullable<AgentRunResult["loopTrace"]>[number][] = [];
         let graphId: string | undefined = plan.loop.entryGraphId;
+        let outputNodeId = plan.outputNodeId;
 
         while (graphId !== undefined) {
+          if (plan.organization && state.executedGraphIds.length >= plan.loop.maxGraphRuns) {
+            throw new Error(`Organization exceeded maxGraphRuns: ${plan.loop.maxGraphRuns}`);
+          }
           const current = compiled.get(graphId);
           if (!current) throw new Error(`Loop selected unknown Graph: ${graphId}`);
 
@@ -133,10 +143,16 @@ export class WorkflowExecutor {
             state.outputs,
             state.visits,
           );
+          if (graphId === undefined) outputNodeId = plan.organization?.outputByGraph?.[current.spec.id] ?? plan.outputNodeId;
+          if (plan.organization) loopTrace.push(Object.freeze({
+            graphId: current.spec.id, visit: state.visits[current.spec.id]!,
+            ...(graphId === undefined ? {} : { nextGraphId: graphId }), outputNodeId,
+            nodeOutputs: Object.freeze(structuredClone(Object.fromEntries(current.nodes.map(node => [node.id, state.outputs[node.id]])))),
+          }));
         }
 
-        const outputNode = nodesById.get(plan.outputNodeId)!;
-        const answer = answerFor(outputNode, state.outputs, state.executedNodeIds);
+        const outputNode = nodesById.get(outputNodeId)!;
+        const answer = answerFor(outputNode, state.outputs, state.executedNodeIds, Boolean(plan.organization));
         return Object.freeze({
           answer,
           executedNodeIds: Object.freeze([...state.executedNodeIds]),
@@ -146,6 +162,10 @@ export class WorkflowExecutor {
           totalTokens: state.totalTokens,
           generationOutcomes: Object.freeze([...state.generationOutcomes]),
           checkerAudits: Object.freeze([...state.checkerAudits]),
+          ...(plan.organization ? {
+            nodeOutputs: Object.freeze(structuredClone(state.outputs)),
+            loopTrace: Object.freeze(loopTrace),
+          } : {}),
         });
       },
     });
@@ -176,10 +196,13 @@ function compileGraphs(
     for (const node of nodes) {
       // Cross-Graph dependencies are intentionally absent from the local DAG. Their
       // values are read from Loop state by the binder when this Graph is invoked.
+      const organizationBinding = plan.organization?.nodes.find(item => item.id === node.id);
       const localDependencies = node.dependencies.filter((id) => localIds.has(id));
       builder = builder.node(node.id, node.type, localDependencies, (input, localOutputs) => {
-        const dependencies = bindDependencies(node, nodesById, input.priorOutputs, localOutputs, bindings);
-        return nodeInput(node, input.task, dependencies, model, bindings);
+        const dependencies = plan.organization
+          ? bindOrganizationDependencies(node, plan, nodesById, input.priorOutputs, localOutputs, bindings)
+          : bindDependencies(node, nodesById, input.priorOutputs, localOutputs, bindings);
+        return nodeInput(node, input.task, dependencies, model, bindings, organizationBinding);
       });
     }
 
@@ -191,6 +214,31 @@ function compileGraphs(
     }));
   }
   return result;
+}
+
+/** Organization inputs are a capability boundary: no implicit accumulated history. */
+function bindOrganizationDependencies(
+  node: WorkflowNodeSpec,
+  plan: AgentPlanSpec,
+  nodesById: ReadonlyMap<string, WorkflowNodeSpec>,
+  priorOutputs: Readonly<Record<string, NormalizedNodeOutput>>,
+  localOutputs: Readonly<Record<string, unknown>>,
+  bindings: ReadonlyMap<string, ReflectionBinding>,
+): Readonly<Record<string, NormalizedNodeOutput>> {
+  const binding = plan.organization!.nodes.find(item => item.id === node.id)!;
+  const dependencies: Record<string, NormalizedNodeOutput> = {};
+  for (const id of binding.dependencies) {
+    if (Object.hasOwn(localOutputs, id)) {
+      dependencies[id] = normalizeNodeOutput(nodesById.get(id)!, localOutputs[id], bindings.get(id));
+    } else if (nodesById.get(id)?.graphId !== node.graphId && Object.hasOwn(priorOutputs, id)) {
+      dependencies[id] = priorOutputs[id]!;
+    } else throw new Error(`Node ${node.id} declared dependency has not executed: ${id}`);
+  }
+  // Feedback names previous Graph invocations; it is optional on the first visit.
+  for (const id of binding.feedback ?? []) {
+    if (!Object.hasOwn(dependencies, id) && Object.hasOwn(priorOutputs, id)) dependencies[id] = priorOutputs[id]!;
+  }
+  return Object.freeze(dependencies);
 }
 
 function bindDependencies(
@@ -224,6 +272,7 @@ function nodeInput(
   dependencies: Readonly<Record<string, NormalizedNodeOutput>>,
   model: ModelConfig,
   bindings: Map<string, ReflectionBinding>,
+  organizationBinding?: NonNullable<AgentPlanSpec["organization"]>["nodes"][number],
 ): unknown {
   const context = dependencyContext(dependencies);
   const messages = dependencyMessages(dependencies);
@@ -251,29 +300,38 @@ function nodeInput(
         strategy: { name: node.config.strategy, options: { ...node.config.options } },
         model,
         generation: node.config.generation,
-        constraints: { maxSteps: EXPERIMENT_EXECUTION.maxSteps },
+        constraints: { maxSteps: organizationBinding ? node.config.maxSteps : EXPERIMENT_EXECUTION.maxSteps },
         metadata,
       };
 
     case "INFER.REASONING.SAMPLE": {
-      // Evolved workflows may move/rewire sample-1. Its historical ID must
-      // not discard actual prerequisite answers in those candidates.
-      if (isRawBaseline(node) && messages.length === 0) {
+      // Preserve the legacy path; code organizations use the same node-local
+      // message contract for initial and evolved graphs, regardless of IDs.
+      if (!organizationBinding && isRawBaseline(node) && messages.length === 0) {
         return {
-          messages: task.dataset === "drop" || task.dataset === "gsm8k"
+          messages: task.dataset === "drop" || task.dataset === "gsm8k" || task.dataset === "humaneval" || task.dataset === "mbpp"
             ? baselineTextMessages(task.dataset, node.config.instruction, task.prompt)
             : [{ role: "user", content: node.config.instruction + task.prompt }],
           model, generation: node.config.generation, metadata,
         };
       }
       const evidence = messages.length
-        ? `\n\nOutputs from prerequisite Nodes:\n${messages.map(({ id, message }) => `[${id}] ${messageText(message)}`).join("\n")}`
+        ? `\n\nOutputs from prerequisite Nodes:\n${messages.map(({ id, message }, index) => `[${organizationBinding ? `dependency-${index + 1}` : id}] ${messageText(message)}`).join("\n")}`
         : "";
-      const contextText = context
-        ? `\n\nWorking context:\n${context.items.map((item) => contextItemText(item)).join("\n")}`
+      // CONTEXT.LOAD may carry the public task already present in the root
+      // message. Suppress only that exact redundant item; retain all other
+      // explicitly bound context, without generated Context/Node identifiers.
+      const contextItems = organizationBinding
+        ? Object.values(dependencies).flatMap(output => isContext(output) ? output.items : [])
+          .filter(item => !(item.content === taskMessage && item.metadata?.sourceType === "message" && item.metadata?.role === "user"))
+        : context?.items ?? [];
+      const contextText = contextItems.length
+        ? `\n\nWorking context:\n${contextItems.map(item => organizationBinding
+          ? typeof item.content === "string" ? item.content : JSON.stringify(item.content)
+          : contextItemText(item)).join("\n")}`
         : "";
       return {
-        messages: task.dataset === "drop" || task.dataset === "gsm8k"
+        messages: task.dataset === "drop" || task.dataset === "gsm8k" || task.dataset === "humaneval" || task.dataset === "mbpp"
           ? baselineTextMessages(task.dataset, node.config.instruction, task.prompt, `${evidence}${contextText}`)
           : [
           { role: "system", content: node.config.instruction },
@@ -300,13 +358,18 @@ function nodeInput(
     }
 
     case "INFER.REASONING.REFLECT": {
-      const target = messages.at(-1);
+      const target = organizationBinding
+        ? messages.find(item => item.id === organizationBinding.targetNodeId)
+        : messages.at(-1);
       if (!target) throw new Error(`Node ${node.id} requires a message-producing dependency`);
       validateCheckerCriteria(task.dataset, node.config.criteria);
       const targetNodeId = target.answerSourceNodeId ?? target.id;
-      const feedback = Object.values(dependencies).flatMap(output => "checkerAudit" in output && output.checkerAudit.mode !== "revise" &&
+      const feedbackOutputs = Object.values(dependencies);
+      const feedback = feedbackOutputs.flatMap(output => "checkerAudit" in output && output.checkerAudit.mode !== "revise" &&
         output.checkerAudit.targetNodeId === targetNodeId && output.checkerAudit.originalAnswer === messageText(target.message) ? [output.checkerAudit] : []);
-      const criteria = [checkerContract(task.dataset), ...node.config.criteria];
+      const criteria = [checkerContract(task.dataset),
+        ...(organizationBinding && node.config.mode === "revise" ? [CODE_REVISE_OUTPUT_CONTRACT] : []),
+        ...node.config.criteria];
       bindings.set(node.id, { target: target.message, targetNodeId, feedback, criteria });
       return {
         messages: [{ role: "user", content: taskMessage }],
@@ -351,10 +414,10 @@ function validatePlan(plan: AgentPlanSpec): ReadonlyMap<string, WorkflowNodeSpec
       if (assigned.has(nodeId)) throw new Error(`Node ${nodeId} is assigned to multiple Graphs`);
       for (const dependency of node.dependencies) {
         if (!nodes.has(dependency)) throw new Error(`Node ${nodeId} references unknown dependency: ${dependency}`);
-        if (nodes.get(dependency)!.graphId !== graphSpec.id) {
+        if (nodes.get(dependency)!.graphId !== graphSpec.id && !plan.organization) {
           throw new Error(`Node ${nodeId} dependency ${dependency} crosses a Graph boundary; use Loop state instead`);
         }
-        if (!seenLocally.has(dependency)) {
+        if (nodes.get(dependency)!.graphId === graphSpec.id && !seenLocally.has(dependency)) {
           throw new Error(`Graph ${graphSpec.id} must list local dependency ${dependency} before ${nodeId}`);
         }
       }
@@ -483,11 +546,13 @@ function answerFor(
   outputNode: WorkflowNodeSpec,
   outputs: Readonly<Record<string, NormalizedNodeOutput>>,
   executedNodeIds: readonly string[],
+  strict = false,
 ): string {
   const direct = outputs[outputNode.id];
   if (!direct) throw new Error(`Output Node was not executed: ${outputNode.id}`);
   const message = outputMessage(direct);
   if (message) return messageText(message);
+  if (strict) throw new Error(`Output Node ${outputNode.id} did not produce an answer message`);
 
   // VERIFY/CRITIQUE reflections need not revise and cross-Graph values are Loop
   // state rather than local dependencies. Walk the actual execution history so

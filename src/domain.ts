@@ -89,6 +89,7 @@ export interface SearchNodeStatistics {
 }
 
 export interface SearchTreeNode {
+  readonly organizationBinding?: import("./workflow/organization-types.js").OrganizationSpec["nodes"][number];
   readonly id: string;
   readonly searchParentId: string | null;
   readonly depth: number;
@@ -118,6 +119,7 @@ export type GraphTransition =
   | { readonly kind: "switch"; readonly cases: readonly { readonly when: OutputCondition; readonly graphId: string }[]; readonly defaultGraphId?: string };
 
 export interface AgentPlanSpec {
+  readonly organization?: import("./workflow/organization-types.js").OrganizationSpec;
   readonly id: string;
   readonly leafSearchNodeId: string;
   readonly nodes: readonly WorkflowNodeSpec[];
@@ -155,6 +157,11 @@ export interface ScoreEvidence {
 }
 
 export interface CaseResult extends ScoreEvidence {
+  readonly executedNodeIds?: readonly string[];
+  readonly executedGraphIds?: readonly string[];
+  readonly nodeOutputs?: Readonly<Record<string, unknown>>;
+  readonly loopTrace?: readonly { readonly graphId: string; readonly visit: number; readonly nextGraphId?: string; readonly outputNodeId: string; readonly nodeOutputs?: Readonly<Record<string, unknown>> }[];
+
   readonly checkerAudits?: readonly CheckerAudit[];
   readonly generationOutcomes?: readonly GenerationOutcome[];
   readonly providerDiagnostics?: readonly ProviderCallDiagnostics[];
@@ -215,6 +222,9 @@ export interface EvaluationSummary {
 }
 
 export interface SearchExperience {
+  readonly constructionBranchId?: string;
+  readonly comparisonEvaluationId?: string;
+  readonly organization?: import("./workflow/organization-types.js").OrganizationSpec;
   readonly searchNodeId: string;
   readonly parentSearchNodeId: string | null;
   readonly node: WorkflowNodeSpec;
@@ -247,6 +257,8 @@ export interface GenerationOutcome {
 }
 
 export interface AgentRunResult {
+  readonly nodeOutputs?: Readonly<Record<string, unknown>>;
+  readonly loopTrace?: readonly { readonly graphId: string; readonly visit: number; readonly nextGraphId?: string; readonly outputNodeId: string; readonly nodeOutputs?: Readonly<Record<string, unknown>> }[];
   readonly checkerAudits?: readonly CheckerAudit[];
   readonly generationOutcomes?: readonly GenerationOutcome[];
   readonly answer: string;

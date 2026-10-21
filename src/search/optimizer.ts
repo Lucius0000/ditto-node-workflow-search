@@ -35,6 +35,9 @@ export interface SearchCallbacks {
 }
 
 export interface SearchResumeState {
+  readonly nodeConstruction?: import("./node-construction.js").NodeConstructionState;
+  readonly nodeExpansionRejections?: readonly import("./node-expansion-proposer.js").ExpansionRejection[];
+  readonly consecutiveProposalFailures?: number;
   readonly schemaVersion: 1;
   readonly nodes: readonly SearchTreeNode[];
   readonly experiences: readonly SearchExperience[];

@@ -110,6 +110,9 @@ async function evaluateOne(
       attempts: Object.freeze(attempts), usageKnown: run.usageKnown !== false && prior?.usageKnown !== false && attempts.every(value => value.usageKnown),
       ...providerUsage,
       ...(run.checkerAudits?.length ? { checkerAudits: run.checkerAudits } : {}),
+      executedNodeIds: run.executedNodeIds, executedGraphIds: run.executedGraphIds,
+      ...(run.nodeOutputs ? { nodeOutputs: run.nodeOutputs } : {}),
+      ...(run.loopTrace ? { loopTrace: run.loopTrace } : {}),
       latencyMs: Date.now() - started,
     });
   }
@@ -123,6 +126,9 @@ async function evaluateOne(
     ...evidence,
     ...(run.generationOutcomes?.length ? { generationOutcomes: run.generationOutcomes } : {}),
     ...(run.checkerAudits?.length ? { checkerAudits: run.checkerAudits } : {}),
+      executedNodeIds: run.executedNodeIds, executedGraphIds: run.executedGraphIds,
+      ...(run.nodeOutputs ? { nodeOutputs: run.nodeOutputs } : {}),
+      ...(run.loopTrace ? { loopTrace: run.loopTrace } : {}),
     latencyMs: Date.now() - started,
   });
 }
