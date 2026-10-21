@@ -13,9 +13,19 @@ import { loadDirectedResume } from "./run/directed-resume.js";
 import { WorkflowExecutor } from "./workflow/executor.js";
 import { GENERATION, PROTOCOL } from "./protocol.js";
 import { assertBaselinePromptProfile, baselinePromptProfile, baselinePrompts } from "./benchmark/baseline-prompts.js";
+import { runCodeSearch } from "./code-search.js";
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
+  if (options.command === "search" && (options.dataset === "humaneval" || options.dataset === "mbpp")) {
+    if (options.repeats !== 1) throw Error("Code search requires --repeats 1; baseline is separate from the explicit new-candidate budget");
+    const source = process.env.CODE_SEARCH_SOURCE ?? "official";
+    if (source !== "official" && source !== "ark-plan") throw Error("CODE_SEARCH_SOURCE must be official or ark-plan");
+    await runCodeSearch({ dataset: options.dataset, mode: "search", source,
+      directory: options.resumeDir ?? join(options.outputRoot, options.dataset, new Date().toISOString().replace(/[:.]/g, "-")),
+      dataDir: options.dataDir, dockerImage: options.dockerImage, newCandidates: options.rounds });
+    return;
+  }
   const provider = Object.freeze({ ...loadProviderSettings(),
     concurrency: options.command === "search" ? options.searchProviderConcurrency : options.testProviderConcurrency });
   const experiment = createExperimentRuntime(provider);

@@ -303,6 +303,7 @@ async def main():
         digest = hashlib.sha256(json.dumps(body.get("messages"), ensure_ascii=False).encode()).hexdigest()
         log({"phase": "request", "id": request["id"], "promptHash": digest, "model": body["model"],
              "profile": request.get("profile", "math"),
+             "messages": body.get("messages"),
              "max_tokens": body.get("max_tokens"), "temperature": body.get("temperature"), "top_p": body.get("top_p"),
              "n": body.get("n"), "response_format": body.get("response_format"), "stream": body.get("stream", False),
              "thinking": (body.get("extra_body") or {}).get("thinking"),

@@ -99,8 +99,8 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
     outputRoot: resolve(cwd, values.get("output-root") ?? "runs"),
     searchLimit: integer(values.get("search-limit") ?? "0", "search-limit", 0, 100_000),
     testLimit: integer(values.get("test-limit") ?? "0", "test-limit", 0, 100_000),
-    rounds: integer(values.get("rounds") ?? "20", "rounds", 1, 1_000),
-    repeats: integer(values.get("repeats") ?? "5", "repeats", 1, 20),
+    rounds: integer(values.get("rounds") ?? (["humaneval", "mbpp"].includes(rawDataset) ? "2" : "20"), "rounds", 1, 1_000),
+    repeats: integer(values.get("repeats") ?? (["humaneval", "mbpp"].includes(rawDataset) ? "1" : "5"), "repeats", 1, 20),
     testRepeats: integer(values.get("test-repeats") ?? "3", "test-repeats", 1, 20),
     evaluationConcurrency: rawCommand === "search" ? searchConcurrency : testConcurrency,
     searchConcurrency,
@@ -111,7 +111,7 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
     patience: integer(values.get("patience") ?? "5", "patience", 1, 100),
     seed: integer(values.get("seed") ?? "42", "seed", 0, 0x7fffffff),
     maximumDepth: integer(values.get("maximum-depth") ?? "10", "maximum-depth", 2, 24),
-    dockerImage: values.get("docker-image") ?? process.env.CODE_JUDGE_IMAGE ?? "python:3.13-slim",
+    dockerImage: values.get("docker-image") ?? process.env.CODE_JUDGE_IMAGE ?? "python:3.12-alpine",
   });
 }
 
