@@ -1,0 +1,3 @@
+# Python HTTP bridge used by the offline integration tests and model transport.
+openai==2.14.0
+httpx==0.28.1

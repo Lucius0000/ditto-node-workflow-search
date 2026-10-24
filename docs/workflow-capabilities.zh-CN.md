@@ -48,4 +48,4 @@ npm run search:math -- --request-timeout-ms unlimited --workflow-timeout-ms unli
 
 ## 验证
 
-执行`npm ci`和`npm run check`。离线检查覆盖通用解析/执行入口、多次LOAD、Context消费、真实Memory与工具操作、题内隔离、持续流截止、重试共用预算、取消释放、超时零分及工程故障分类，不需要重新发起付费全量实验。
+先用Python 3.13执行`python -m pip install -r requirements-provider.txt`安装HTTP桥接依赖，再执行`npm ci`和`npm run check`。CI同时安装Python和Node依赖，HTTP集成测试通过真实Python桥接访问本地测试服务。离线检查覆盖通用解析/执行入口、多次LOAD、Context消费、真实Memory与工具操作、题内隔离、持续流截止、重试共用预算、取消释放、超时零分及工程故障分类，不需要重新发起付费全量实验。

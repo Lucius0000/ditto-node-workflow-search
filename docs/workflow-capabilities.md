@@ -50,4 +50,4 @@ Before a new benchmark, agree on limits, queue/wait accounting, timeout scoring 
 
 ## Verification
 
-`npm ci` and `npm run check` run offline integration and failure checks. Tests cover the regular snapshot parser/runner, repeated Context LOAD, Context consumption, real memory/tool operations, task isolation, continuous-stream deadlines, shared retry budgets, cancellation, zero scoring and infrastructure failures. These checks do not require new paid benchmark calls.
+Install the Python 3.13 HTTP-bridge dependencies with `python -m pip install -r requirements-provider.txt`, then run `npm ci` and `npm run check`. CI installs both Python and Node dependencies; the HTTP integration tests use the real Python bridge against local fixture servers. Tests cover the regular snapshot parser/runner, repeated Context LOAD, Context consumption, real memory/tool operations, task isolation, continuous-stream deadlines, shared retry budgets, cancellation, zero scoring and infrastructure failures. These checks do not require new paid benchmark calls.
