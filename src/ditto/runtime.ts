@@ -10,6 +10,7 @@ import { createInteractionWorker, type RegisteredTool } from "@codesoul-co/ditto
 import { EXPERIMENT_GENERATION, EXPERIMENT_PROVIDER_OPTIONS, type ExperimentModelProfile } from "../model-profile.js";
 import type { ProviderSettings } from "../config.js";
 import { PythonTransport } from "./python-transport.js";
+import { withRequestTimeBudget, type TimeBudgetPolicy } from "../execution/time-budget.js";
 
 export interface ExperimentRuntime {
   readonly runtime: DittoRuntime;
@@ -20,6 +21,9 @@ export interface ExperimentRuntime {
 }
 
 export interface ExperimentRuntimeOptions {
+  readonly timeBudget?: TimeBudgetPolicy;
+  /** Reuse the one application-owned provider gate for task-local resources. */
+  readonly managedProvider?: boolean;
   readonly profile?: ExperimentModelProfile;
   readonly tools?: readonly RegisteredTool[];
   readonly memory?: MemoryResources;
@@ -42,7 +46,8 @@ export function createExperimentRuntime(settings: ProviderSettings, options: Exp
     providerOptions: EXPERIMENT_PROVIDER_OPTIONS, timeoutMs: nodeDeadline,
   });
   const providerName = "deepseek";
-  const provider = limitProviderConcurrency(applyModelProfile(http, profile), settings.concurrency);
+  const provider = options.managedProvider && options.provider ? options.provider
+    : limitProviderConcurrency(withRequestTimeBudget(applyModelProfile(http, profile), options.timeBudget), settings.concurrency);
   const budget = budgetOutputBoundary();
   const checked = budget.provider(withReflectionFormatRepair(provider, async event => {
     if (process.env.DITTO_PROVIDER_LOG) await appendFile(process.env.DITTO_PROVIDER_LOG, JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n", "utf8");

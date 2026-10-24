@@ -8,7 +8,7 @@
 
 优化器返回 `{referenceCandidateId, rationale, nodes}`。`referenceCandidateId` 可以由模型选择任意已有候选或为 null，仅记录来源。`nodes` 是完整新流程，可在任意合法位置插入、删除、替换、重排节点及重接依赖，也可修改初始 solver。完整提示词导出为 `DIRECTED_OPTIMIZER_PROMPT`，位于 `src/search/directed-proposer.ts`。
 
-节点仍使用真实 Ditto 能力：SAMPLE、TRAJECTORY、REFLECT、DELIBERATE，以及唯一的首部 CONTEXT.LOAD。保留 2–24 节点、唯一 ID、prepare→solve→refine 阶段顺序、同 Graph 依赖只能指向前序节点、DELIBERATE 至少两个合法 solver 输入、revise 必须接最新 checker 等校验。删除节点后必须修复悬空依赖。Graph/Loop 由完整快照构建，沿用顺序阶段转换与最后节点输出；本次不搜索任意 Loop 分支或回边。
+节点包括四种INFER及Context、Memory、Interaction的已实现操作，完整清单与输入绑定见[工作流能力说明](workflow-capabilities.zh-CN.md)。保留一个首部题面LOAD，允许额外LOAD读取真实上游结果；保留2–24节点、唯一ID、阶段顺序、同Graph前序依赖和checker规则。删除节点后修复悬空依赖，证据须有后续答案消费者。Graph/Loop仍按顺序阶段构建，输出来自Infer节点。
 
 节点 ID 改名但配置及依赖结构不变，视为重复候选。固定生成参数不可由优化器修改。`sample-1` 若接入前置答案，会实际消费这些答案；仅无前置答案时使用原始基线输入路径。
 
@@ -18,7 +18,7 @@
 
 - 正常答错、空答案或达到长度上限但得到可评分答案：完整有效评估完成后计 1。
 - 非法/重复候选：计 0。
-- provider、执行、超时或评分工程故障使评估无效：计 0，不产生用于排名或收敛的占位分。
+- provider、执行或评分工程故障使评估无效：不计有效实验，不产生排名或收敛的占位分。耗尽显式配置的执行时间预算则是有效零分、不补测；网络超时不因此改判为模型失败。见[时间预算规则](workflow-capabilities.zh-CN.md)。
 - 中断中的候选：计 0，先保存 pending；恢复同一候选，完成后只计 1。
 
 只在有效评估序列上调用现有 AFlow Top-3、z=0、连续 5 次不变的收敛规则。没有 Top-K 父候选池、概率抽样、树回传或深度预算。正式 search 明确拒绝 `--top-k` 和 `--maximum-depth`；seed 不控制候选生成。

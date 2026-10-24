@@ -44,6 +44,7 @@ export interface BenchmarkIdentity {
 }
 
 export interface BenchmarkEvaluationOptions {
+  readonly timeBudget?: import("../execution/time-budget.js").TimeBudgetPolicy;
   readonly repeats?: number;
   readonly concurrency?: number;
   readonly retryAttempts?: number;

@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { DATASETS, type DatasetName } from "./domain.js";
+import { validateTimeBudget, type TimeBudgetPolicy } from "./execution/time-budget.js";
 
 export interface ProviderSettings {
   readonly baseUrl: string;
@@ -27,6 +28,7 @@ export function loadProviderSettings(env: NodeJS.ProcessEnv = process.env): Prov
 }
 
 export interface ExperimentOptions {
+  readonly timeBudget?: TimeBudgetPolicy;
   readonly command: "search" | "test";
   readonly dataset: DatasetName;
   readonly dataDir: string;
@@ -52,6 +54,7 @@ export interface ExperimentOptions {
 }
 
 const FLAGS = new Set([
+  "request-timeout-ms", "workflow-timeout-ms", "time-budget-reason",
   "dataset", "data-dir", "run-dir", "output-root", "search-limit", "test-limit", "rounds", "repeats",
   "test-repeats", "evaluation-concurrency", "search-concurrency", "test-concurrency", "resume-dir", "resume-round",
   "search-provider-concurrency", "test-provider-concurrency", "top-k", "patience", "seed", "maximum-depth", "docker-image",
@@ -74,6 +77,15 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
     values.set(key, value);
   }
   const rawDataset = values.get("dataset") ?? "math";
+  const requestedBudget = ["request-timeout-ms", "workflow-timeout-ms", "time-budget-reason"].some(key => values.has(key));
+  const budgetValue = (key: string): number | null => {
+    const value = values.get(key);
+    if (value === "unlimited") return null;
+    if (value === undefined || !/^\d+$/.test(value)) throw Error(`${key} must be positive milliseconds or unlimited`);
+    return integer(value, key, 1, 2 ** 31 - 1);
+  };
+  const timeBudget = requestedBudget ? validateTimeBudget({ requestMs: budgetValue("request-timeout-ms"), workflowMs: budgetValue("workflow-timeout-ms"),
+    ...(values.has("time-budget-reason") ? { reason: values.get("time-budget-reason")! } : {}) }) : undefined;
   if (!isDataset(rawDataset)) throw new Error(`Unsupported dataset: ${rawDataset}`);
   if (rawCommand === "search" && (values.has("top-k") || values.has("maximum-depth"))) {
     throw new Error("Optimizer-directed search has no sampled parents or tree depth; remove --top-k and --maximum-depth");
@@ -91,6 +103,7 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
   const testConcurrency = integer(values.get("test-concurrency") ?? values.get("evaluation-concurrency")
     ?? process.env.DITTO_TEST_CONCURRENCY ?? "200", "test-concurrency", 1, 4_096);
   return Object.freeze({
+    ...(timeBudget ? { timeBudget } : {}),
     command: rawCommand,
     dataset: rawDataset,
     dataDir: resolve(cwd, values.get("data-dir") ?? "data/datasets"),

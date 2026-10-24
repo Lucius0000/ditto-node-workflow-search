@@ -1,5 +1,6 @@
 import type { AgentRunResult, BenchmarkTask, CaseResult, EvaluationSummary } from "../domain.js";
 import type { BenchmarkEvaluationOptions, BenchmarkRunner, PrivateScorer } from "./types.js";
+import { TimeBudgetExceeded, throwIfTimeBudgetExceeded, validateTimeBudget, withWorkflowTimeBudget, type TimeBudgetPolicy } from "../execution/time-budget.js";
 
 export async function evaluateTasks(
   tasks: readonly BenchmarkTask[],
@@ -10,6 +11,7 @@ export async function evaluateTasks(
   const repeats = options.repeats ?? 1;
   const concurrency = options.concurrency ?? 1;
   const retryAttempts = options.retryAttempts ?? 5;
+  if (options.timeBudget) validateTimeBudget(options.timeBudget);
   if (!Number.isInteger(repeats) || repeats < 1) throw new Error("Evaluation repeats must be a positive integer");
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("Evaluation concurrency must be a positive integer");
   if (!Number.isInteger(retryAttempts) || retryAttempts < 1) throw new Error("Retry attempts must be a positive integer");
@@ -23,7 +25,7 @@ export async function evaluateTasks(
     const current = await mapLimit(tasks, concurrency, async (task) => {
       const prior = options.priorCases?.find(value => value.caseId === `${task.id}#${repeat + 1}`);
       const result = prior?.valid === true && prior.error === undefined
-        ? prior : await evaluateOne(task, repeat, scorer, runner, retryAttempts, prior);
+        ? prior : await evaluateOne(task, repeat, scorer, runner, retryAttempts, prior, options.timeBudget);
       completed++;
       await options.onCase?.({ completed, total, result });
       return result;
@@ -47,7 +49,7 @@ export async function evaluateTasks(
     examples: tasks.length,
     successfulRuns: results.filter((result) => result.error === undefined).length,
     failedRuns: results.filter((result) => result.error !== undefined).length,
-    timeoutRuns: results.filter((result) => result.failureKind === "timeout").length,
+    timeoutRuns: results.filter((result) => result.failureKind === "timeout" || result.timeBudgetOutcome).length,
     wrongRuns: results.filter((result) => result.error === undefined && result.score === 0).length,
     inputTokens: sum(results.map((result) => result.inputTokens)),
     outputTokens: sum(results.map((result) => result.outputTokens)),
@@ -64,14 +66,25 @@ async function evaluateOne(
   runner: BenchmarkRunner,
   retryAttempts: number,
   prior?: CaseResult,
+  timeBudget?: TimeBudgetPolicy,
 ): Promise<CaseResult> {
   const started = Date.now();
   const attempts: NonNullable<CaseResult["attempts"]>[number][] = [...(prior?.attempts ?? [])];
   const history = prior ? { previousResults: Object.freeze([prior]) } : {};
   let run: AgentRunResult;
   try {
-    run = await retryWorkflow(() => runner(task), retryAttempts, attempts);
+    run = await withWorkflowTimeBudget(timeBudget, () => retryWorkflow(() => runner(task), retryAttempts, attempts));
   } catch (error) {
+    if (error instanceof TimeBudgetExceeded) {
+      return Object.freeze({
+        caseId: `${task.id}#${repeat + 1}`, ...history, valid: true, usageKnown: false,
+        attempts: Object.freeze(attempts), ...aggregateUsage(error, attempts, prior),
+        score: 0, expected: expectedLabel(scorer, task.id), prediction: "",
+        normalizedExpected: "", normalizedPrediction: "", method: "time-budget-exhausted",
+        timeBudgetOutcome: error.outcome, latencyMs: Date.now() - started,
+        unknownUsageAttempts: (aggregateUsage(undefined, attempts, prior).unknownUsageAttempts ?? 0) + error.unknownUsageAttempts,
+      });
+    }
     const message = error instanceof Error ? error.message : String(error);
     return Object.freeze({
       caseId: `${task.id}#${repeat + 1}`,
@@ -132,9 +145,11 @@ async function retryWorkflow<T>(operation: () => Promise<T>, attempts: number, f
   const previousAttempts = failures.length;
   let latest: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    throwIfTimeBudgetExceeded();
     try {
       return await operation();
     } catch (error) {
+      throwIfTimeBudgetExceeded();
       latest = error;
       const message = error instanceof Error ? error.message : String(error);
       failures.push(Object.freeze({ attempt: previousAttempts + attempt, error: message,

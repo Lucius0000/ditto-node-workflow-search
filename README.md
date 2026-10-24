@@ -1,5 +1,7 @@
 # Ditto Node Workflow Search
 
+节点调用范围、额外Context载入及启动前必须指定的时间预算，见[工作流能力与时间预算](docs/workflow-capabilities.zh-CN.md)（[English](docs/workflow-capabilities.md)）。本文下方历史命令需补充显式时间预算参数。
+
 这是一个独立的 TypeScript 实验仓库：只使用已发布的 `@codesoul-co/ditto` npm 包，通过数据集反馈搜索更好的 Agent 结构，不修改 Ditto 源码或 `node_modules`。
 
 ## 当前正式协议（DROP / GSM8K）

@@ -8,6 +8,7 @@ import { materializeAgentPlan } from "../workflow/spec.js";
 import { assertBaselinePromptProfile } from "../benchmark/baseline-prompts.js";
 
 export interface WorkflowCheckpoint {
+  readonly timeBudget?: import("../execution/time-budget.js").TimeBudgetPolicy;
   readonly schemaVersion: 1;
   readonly searchNodeId: string;
   readonly plan: AgentPlanSpec;
@@ -33,6 +34,7 @@ export function checkpointForPlan(plan: AgentPlanSpec, manifest: Record<string, 
     dataset: manifest.dataset as DatasetName, model: manifest.model as string, endpoint: manifest.endpoint as string,
     protocol: manifest.protocol, metricProfile: manifest.metricProfile as string, dittoVersion: manifest.dittoVersion as string,
     ...(manifest.promptProfile ? { promptProfile: manifest.promptProfile } : {}),
+    ...(manifest.timeBudget ? { timeBudget: manifest.timeBudget as import("../execution/time-budget.js").TimeBudgetPolicy } : {}),
   };
   validateCheckpoint(checkpoint);
   return checkpoint;

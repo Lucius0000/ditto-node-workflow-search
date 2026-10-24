@@ -8,7 +8,8 @@ import { parseRoundTestArguments } from "./round-test-config.js";
 import { discoverCheckpoints, writeArtifact, type WorkflowCheckpoint } from "./run/checkpoints.js";
 import { IndependentRoundTests } from "./run/independent-tests.js";
 import { acquireTestLock } from "./run/test-lock.js";
-import { WorkflowExecutor } from "./workflow/executor.js";
+import { createWorkflowRunner } from "./workflow/runner.js";
+import { assertExplicitTimeBudget, type TimeBudgetPolicy } from "./execution/time-budget.js";
 
 async function main(): Promise<void> {
   const options = parseRoundTestArguments(process.argv.slice(2));
@@ -31,14 +32,17 @@ async function main(): Promise<void> {
     return;
   }
   const provider = Object.freeze({ ...loadProviderSettings(), concurrency: options.providerConcurrency });
+  const timeBudget = manifest.timeBudget as TimeBudgetPolicy | undefined;
+  assertExplicitTimeBudget(timeBudget);
   if (manifest.model !== provider.model || manifest.endpoint !== provider.baseUrl || JSON.stringify(manifest.protocol) !== JSON.stringify(PROTOCOL)) throw new Error("Test model/endpoint/protocol differs from frozen search");
   const releaseLock = await acquireTestLock(options.outputDirectory);
-  const experiment = createExperimentRuntime(provider);
-  const executor = new WorkflowExecutor(experiment.runtime, experiment.providerName, experiment.model);
+  const experiment = createExperimentRuntime(provider, { timeBudget });
+  const executor = createWorkflowRunner(experiment, provider);
   const validate = (checkpoint: WorkflowCheckpoint): void => {
     if (checkpoint.dataset !== "math" || checkpoint.model !== provider.model || checkpoint.endpoint !== provider.baseUrl
       || checkpoint.metricProfile !== manifest.metricProfile || checkpoint.dittoVersion !== manifest.dittoVersion
       || JSON.stringify(checkpoint.protocol) !== JSON.stringify(PROTOCOL)) throw new Error("Checkpoint metadata differs from the frozen experiment");
+    if (JSON.stringify(checkpoint.timeBudget) !== JSON.stringify(timeBudget)) throw Error("Checkpoint time budget differs from frozen search");
   };
   const runner = new IndependentRoundTests({
     outputDirectory: options.outputDirectory, workflowConcurrency: options.workflowConcurrency,
@@ -48,7 +52,7 @@ async function main(): Promise<void> {
     validate(checkpoint);
     if (await sha256File(testFile) !== testDataHash) throw new Error("The fixed test set changed");
     return benchmark.evaluate((task) => executor.run(checkpoint.plan, task), {
-      repeats: options.repeats, concurrency: options.concurrency, retryAttempts: 5,
+      repeats: options.repeats, concurrency: options.concurrency, retryAttempts: 5, timeBudget,
       async onCase(progress) {
         await onCase(progress.result);
         console.log(JSON.stringify({ phase: "round-test-progress", searchNodeId: checkpoint.searchNodeId,

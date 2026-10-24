@@ -8,6 +8,9 @@ export type StrategyName = (typeof STRATEGIES)[number];
 
 export type SearchableNodeType =
   | "CONTEXT.LOAD"
+  | "CONTEXT.SELECT" | "CONTEXT.UPDATE" | "CONTEXT.COMPRESS"
+  | "MEMORY.WRITE" | "MEMORY.GET" | "MEMORY.SEARCH"
+  | "INTERACTION.ACT.TOOL" | "INTERACTION.OBSERVE"
   | "INFER.REASONING.SAMPLE"
   | "INFER.REASONING.TRAJECTORY"
   | "INFER.REASONING.REFLECT"
@@ -22,8 +25,8 @@ export interface ContextLoadNodeSpec {
   readonly id: string;
   readonly type: "CONTEXT.LOAD";
   readonly graphId: "prepare";
-  readonly dependencies: readonly [];
-  readonly config: { readonly includeTaskMetadata: boolean };
+  readonly dependencies: readonly string[];
+  readonly config: { readonly includeTaskMetadata?: boolean; readonly sourcesSource?: import("./workflow/capability-schema.js").CapabilitySource };
 }
 
 export interface SampleNodeSpec {
@@ -75,7 +78,14 @@ export interface DeliberateNodeSpec {
   };
 }
 
-export type WorkflowNodeSpec = ContextLoadNodeSpec | SampleNodeSpec | TrajectoryNodeSpec | ReflectNodeSpec | DeliberateNodeSpec;
+export type EvidenceNodeType = "CONTEXT.SELECT" | "CONTEXT.UPDATE" | "CONTEXT.COMPRESS" | "MEMORY.WRITE" | "MEMORY.GET" | "MEMORY.SEARCH" | "INTERACTION.ACT.TOOL" | "INTERACTION.OBSERVE";
+export type EvidenceNodeSpec = { [T in EvidenceNodeType]: {
+  readonly id: string; readonly type: T; readonly graphId: "prepare" | "solve" | "refine";
+  readonly dependencies: readonly string[];
+  /** Validated against the per-operation schema before execution. */
+  readonly config: Readonly<Record<string, unknown>>;
+} }[EvidenceNodeType];
+export type WorkflowNodeSpec = ContextLoadNodeSpec | SampleNodeSpec | TrajectoryNodeSpec | ReflectNodeSpec | DeliberateNodeSpec | EvidenceNodeSpec;
 export type NodeProposal = Omit<SampleNodeSpec, "id"> | Omit<TrajectoryNodeSpec, "id"> | Omit<ReflectNodeSpec, "id"> | Omit<DeliberateNodeSpec, "id">;
 
 export interface SearchNodeStatistics {
@@ -155,6 +165,7 @@ export interface ScoreEvidence {
 }
 
 export interface CaseResult extends ScoreEvidence {
+  readonly timeBudgetOutcome?: import("./execution/time-budget.js").TimeBudgetOutcome;
   readonly checkerAudits?: readonly CheckerAudit[];
   readonly generationOutcomes?: readonly GenerationOutcome[];
   readonly providerDiagnostics?: readonly ProviderCallDiagnostics[];
