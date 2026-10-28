@@ -6,8 +6,10 @@ import type { AgentPlanSpec, DatasetName, WorkflowNodeSpec } from "../domain.js"
 import { DATASETS } from "../domain.js";
 import { materializeAgentPlan } from "../workflow/spec.js";
 import { assertBaselinePromptProfile } from "../benchmark/baseline-prompts.js";
+import { assertEvaluationRuntimeIdentity, validateEvaluationRuntimeIdentity, type EvaluationRuntimeIdentity } from "./case-recovery.js";
 
 export interface WorkflowCheckpoint {
+  readonly timeBudget?: import("../execution/time-budget.js").TimeBudgetPolicy;
   readonly schemaVersion: 1;
   readonly searchNodeId: string;
   readonly plan: AgentPlanSpec;
@@ -19,6 +21,7 @@ export interface WorkflowCheckpoint {
   readonly metricProfile: string;
   readonly dittoVersion: string;
   readonly promptProfile?: unknown;
+  readonly executionIdentity?: EvaluationRuntimeIdentity;
 }
 
 export const artifactHash = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -33,17 +36,26 @@ export function checkpointForPlan(plan: AgentPlanSpec, manifest: Record<string, 
     dataset: manifest.dataset as DatasetName, model: manifest.model as string, endpoint: manifest.endpoint as string,
     protocol: manifest.protocol, metricProfile: manifest.metricProfile as string, dittoVersion: manifest.dittoVersion as string,
     ...(manifest.promptProfile ? { promptProfile: manifest.promptProfile } : {}),
+    ...(manifest.timeBudget ? { timeBudget: manifest.timeBudget as import("../execution/time-budget.js").TimeBudgetPolicy } : {}),
+    ...(manifest.executionIdentity ? { executionIdentity: structuredClone(manifest.executionIdentity) as EvaluationRuntimeIdentity } : {}),
   };
   validateCheckpoint(checkpoint);
   return checkpoint;
 }
 
 export function validateCheckpoint(checkpoint: WorkflowCheckpoint): void {
+  if (checkpoint.executionIdentity !== undefined) validateEvaluationRuntimeIdentity(checkpoint.executionIdentity);
   assertBaselinePromptProfile(checkpoint.dataset, checkpoint.promptProfile);
   if (checkpoint.schemaVersion !== 1 || !/^search-\d+$/.test(checkpoint.searchNodeId)) throw new Error("Invalid checkpoint identity");
   if (artifactHash(checkpoint.plan) !== checkpoint.planHash) throw new Error("Checkpoint hash mismatch");
   const rebuilt = materializeAgentPlan(checkpoint.searchNodeId, checkpoint.plan.nodes);
   if (artifactHash(rebuilt) !== checkpoint.planHash) throw new Error("Checkpoint is not the declared Ditto Node/Graph/Loop plan");
+}
+
+/** New runs require the exact source/build/actual SDK identity before executing a checkpoint. */
+export function assertCheckpointExecutionIdentity(checkpoint: WorkflowCheckpoint, actual: EvaluationRuntimeIdentity): void {
+  validateCheckpoint(checkpoint);
+  assertEvaluationRuntimeIdentity(checkpoint.executionIdentity, actual);
 }
 
 export async function writeArtifact(path: string, value: unknown): Promise<void> {

@@ -215,6 +215,7 @@ def log(record):
 
 
 _attempt_context = contextvars.ContextVar("attempt_diagnostics", default=None)
+_attempt_reporting = contextvars.ContextVar("attempt_reporting", default=False)
 
 
 async def record_http_request(request):
@@ -222,6 +223,8 @@ async def record_http_request(request):
     if current is not None:
         current["attempts"] += 1
         log({"phase": "http-attempt", "id": current["requestId"], "attempt": current["attempts"]})
+        if _attempt_reporting.get():
+            emit({"id": current["requestId"], "event": "attempt", "diagnostics": dict(current)})
 
 
 async def record_http_response(response):
@@ -230,9 +233,15 @@ async def record_http_response(response):
         if response.status_code >= 400:
             current["failedAttempts"] += 1
         log({"phase": "http-status", "id": current["requestId"], "attempt": current["attempts"], "status": response.status_code})
+        if _attempt_reporting.get():
+            emit({"id": current["requestId"], "event": "attempt", "status": response.status_code, "diagnostics": dict(current)})
 
 
 def account_usage(diagnostics, raw, failed=False):
+    if isinstance(raw.get("model"), str):
+        diagnostics["responseModel"] = raw["model"]
+    if isinstance(raw.get("system_fingerprint"), str):
+        diagnostics["systemFingerprint"] = raw["system_fingerprint"]
     usage = raw.get("usage") or {}
     known = all(isinstance(usage.get(k), int) and usage[k] >= 0 for k in ("prompt_tokens", "completion_tokens", "total_tokens"))
     diagnostics.update(inputTokens=usage.get("prompt_tokens", 0), outputTokens=usage.get("completion_tokens", 0), totalTokens=usage.get("total_tokens", 0))
@@ -288,6 +297,7 @@ async def main():
         diagnostics = {"requestId": request["id"], "attempts": 0, "failedAttempts": 0, "unknownUsageAttempts": 0,
                        "usageKnown": False, "inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
         token = _attempt_context.set(diagnostics)
+        reporting_token = _attempt_reporting.set(bool(request.get("reportAttempts")))
         started = time.monotonic()
         raw = {}
         incoming = request["body"]
@@ -310,8 +320,11 @@ async def main():
              "toolNames": [tool.get("function", {}).get("name") for tool in body.get("tools") or []],
              "clientGeneration": entry["generation"]})
         try:
-            async with asyncio.timeout(request.get("timeoutMs", 600000) / 1000):
-                response = await entry["sdk"].chat.completions.create(**body, timeout=httpx.Timeout(request.get("timeoutMs", 600000) / 1000, connect=5))
+            timeout_ms = request.get("timeoutMs", 600000)
+            timeout_seconds = None if timeout_ms is None else timeout_ms / 1000
+            connect_seconds = request.get("connectTimeoutMs", 10000) / 1000
+            async with asyncio.timeout(timeout_seconds):
+                response = await entry["sdk"].chat.completions.create(**body, timeout=httpx.Timeout(timeout_seconds, connect=connect_seconds))
                 provider_request_id = response_request_id(response)
                 if body.get("stream"):
                     aggregate = StreamAccumulator()
@@ -371,6 +384,7 @@ async def main():
                     # change generation parameters or add retry attempts.
         finally:
             _attempt_context.reset(token)
+            _attempt_reporting.reset(reporting_token)
             entry["active"] -= 1
             if entry["retired"] and entry["active"] == 0:
                 await entry["sdk"].close()

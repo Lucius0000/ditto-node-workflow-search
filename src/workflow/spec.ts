@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { capabilityPlan, hasCapabilities, validateCapabilityNode, type CapabilityNode } from "./capability-schema.js";
 import {
   STRATEGIES,
   type AgentPlanSpec,
@@ -99,6 +100,7 @@ export function instantiateProposal(proposal: NodeProposal, id: string): Workflo
 }
 
 export function validateNodePath(nodes: readonly WorkflowNodeSpec[]): void {
+  if (hasCapabilities(nodes)) { capabilityPlan("validation", nodes as readonly CapabilityNode[]); return; }
   if (nodes.length < 1 || nodes.length > 24) throw new Error("A Node path requires 1..24 Nodes");
   if (nodes[0]?.type !== "CONTEXT.LOAD") throw new Error("The first search vertex must be CONTEXT.LOAD");
   const seen = new Map<string, WorkflowNodeSpec>();
@@ -131,11 +133,15 @@ export function validateNodePath(nodes: readonly WorkflowNodeSpec[]): void {
 }
 
 export function validateNode(node: WorkflowNodeSpec): void {
+  if (!node.type.startsWith("INFER.") && (node.type !== "CONTEXT.LOAD" || "sourcesSource" in node.config)) { validateCapabilityNode(node as CapabilityNode); return; }
   if (!NODE_ID.test(node.id)) throw new Error(`Invalid Node instance ID: ${node.id}`);
   if (!GRAPH_ORDER.includes(node.graphId)) throw new Error(`Unsupported Graph stage: ${node.graphId}`);
   if (node.type === "CONTEXT.LOAD") {
     if (node.graphId !== "prepare" || node.dependencies.length !== 0) throw new Error("CONTEXT.LOAD must be dependency-free in prepare");
     return;
+  }
+  if (!(node.type === "INFER.REASONING.SAMPLE" || node.type === "INFER.REASONING.TRAJECTORY" || node.type === "INFER.REASONING.DELIBERATE" || node.type === "INFER.REASONING.REFLECT")) {
+    validateCapabilityNode(node as CapabilityNode); return;
   }
   validateGeneration(node.config.generation);
   if (node.type === "INFER.REASONING.TRAJECTORY") {
@@ -188,7 +194,7 @@ export function materializeAgentPlan(
   }
   const chosenTransitions = transitions ?? defaultTransitions;
   validateTransitions(activeGraphs.map((item) => item.id), chosenTransitions);
-  const outputNode = [...nodes].reverse().find((node) => node.type !== "CONTEXT.LOAD");
+  const outputNode = [...nodes].reverse().find((node) => node.type.startsWith("INFER."));
   if (!outputNode) throw new Error("The plan does not have an output-capable Node");
   const fingerprint = pathFingerprint(nodes);
   return Object.freeze({

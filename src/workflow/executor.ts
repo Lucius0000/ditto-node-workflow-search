@@ -3,6 +3,8 @@ import { EXPERIMENT_EXECUTION } from "../model-profile.js";
 import { baselineTextMessages } from "../benchmark/baseline-prompts.js";
 import { isDeepStrictEqual } from "node:util";
 import { isRawBaseline } from "./spec.js";
+import { hasCapabilities, type CapabilityPlan } from "./capability-schema.js";
+import { CapabilityExecutor } from "./capability-executor.js";
 import { checkerContract, validateCheckerCriteria, validateCheckerDependencies } from "./checker-policy.js";
 import { applyCheckerSemantics, type CheckedReflectionOutput, type ReflectionBinding } from "./checker-semantics.js";
 import type { Context, ContextItem as SharedContextItem } from "@codesoul-co/ditto/contracts";
@@ -92,6 +94,7 @@ export class WorkflowExecutor {
    * in execution; only `WorkflowNodeSpec.dependencies` become Graph dependencies.
    */
   async run(plan: AgentPlanSpec, task: BenchmarkTask, signal?: AbortSignal): Promise<AgentRunResult> {
+    if (hasCapabilities(plan.nodes)) return new CapabilityExecutor(this.#runtime, this.#model.provider ?? "deepseek", this.#model.model).run(plan as unknown as CapabilityPlan, task, signal);
     const nodesById = validatePlan(plan);
     validateCheckerDependencies(plan.graphs.flatMap(graph => graph.nodeIds.map(id => nodesById.get(id)!)));
     for (const node of plan.nodes) if (node.type === "INFER.REASONING.REFLECT") validateCheckerCriteria(task.dataset, node.config.criteria);

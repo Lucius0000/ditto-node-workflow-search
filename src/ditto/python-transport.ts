@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { ProviderSettings } from "../config.js";
 import type { ExperimentModelProfile } from "../model-profile.js";
+import { currentTimeBudgetPolicy, timeBudgetFailureRecorder } from "../execution/time-budget.js";
 
 interface PendingRequest {
   resolve(value: Response): void;
@@ -12,6 +13,8 @@ interface PendingRequest {
   cleanup(): void;
   controller?: ReadableStreamDefaultController<Uint8Array>;
   diagnostics?: ProviderCallDiagnostics[];
+  progress?: ProviderCallDiagnostics;
+  recordFailure(error: Error): void;
 }
 
 interface BridgeReply {
@@ -19,11 +22,14 @@ interface BridgeReply {
   status?: number;
   body?: unknown;
   diagnostics?: ProviderCallDiagnostics;
-  event?: "start" | "chunk" | "end" | "error";
+  event?: "start" | "chunk" | "end" | "error" | "attempt";
 }
 
 export interface PythonTransportOptions {
   readonly profile?: ExperimentModelProfile;
+  readonly requestTimeoutMs?: number | null;
+  /** Connection establishment has a separate infrastructure deadline. */
+  readonly connectTimeoutMs?: number;
   /** Fixture process hook; never needed for the production transport. */
   readonly command?: string;
   readonly arguments?: readonly string[];
@@ -36,13 +42,16 @@ export class PythonTransport {
   readonly #profile: ExperimentModelProfile;
   readonly #encoder = new TextEncoder();
   #id = 0;
-  readonly #timeoutMs: number;
+  readonly #timeoutMs: number | null;
+  readonly #connectTimeoutMs: number;
   #failure: Error | undefined;
   #closed = false;
   readonly #exit: Promise<void>;
 
   constructor(settings: ProviderSettings, options: PythonTransportOptions = {}) {
-    this.#timeoutMs = settings.timeoutMs;
+    this.#timeoutMs = options.requestTimeoutMs === undefined ? settings.timeoutMs : options.requestTimeoutMs;
+    this.#connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
+    if (!Number.isSafeInteger(this.#connectTimeoutMs) || this.#connectTimeoutMs < 1) throw new Error("Connect timeout must be positive integer milliseconds");
     this.#profile = options.profile ?? "math";
     const python = options.command ?? process.env.DITTO_PROVIDER_PYTHON ?? process.env.AFLOW_SCORER_PYTHON ?? "python";
     this.#child = spawn(python, options.arguments ? [...options.arguments] : ["-u", fileURLToPath(new URL("../../scripts/provider_bridge.py", import.meta.url))], {
@@ -72,13 +81,15 @@ export class PythonTransport {
     const id = ++this.#id;
     const body: unknown = JSON.parse(init.body);
     const diagnostics = currentProviderDiagnostics();
+    const recordFailure = timeBudgetFailureRecorder();
     return new Promise<Response>((resolve, reject) => {
       const aborted = (): void => this.#cancel(id, new Error("Provider bridge request cancelled"));
       const cleanup = (): void => init.signal?.removeEventListener("abort", aborted);
-      this.#pending.set(id, { resolve, reject, cleanup, ...(diagnostics ? { diagnostics } : {}) });
+      this.#pending.set(id, { resolve, reject, cleanup, recordFailure, ...(diagnostics ? { diagnostics } : {}) });
       init.signal?.addEventListener("abort", aborted, { once: true });
       if (init.signal?.aborted) { aborted(); return; }
-      this.#write({ id, body, profile: this.#profile, timeoutMs: this.#timeoutMs });
+      const policy = currentTimeBudgetPolicy();
+      this.#write({ id, body, profile: this.#profile, timeoutMs: policy ? policy.requestMs : this.#timeoutMs, connectTimeoutMs: this.#connectTimeoutMs, reportAttempts: true });
     });
   };
 
@@ -102,6 +113,10 @@ export class PythonTransport {
     if (!pending) return;
     this.#pending.delete(id);
     pending.cleanup();
+    // Cancellation can occur during an SDK retry before its final reply. Retain
+    // the last admitted HTTP-attempt count instead of pretending this was one call.
+    if (pending.progress) pending.diagnostics?.push({ ...pending.progress,
+      failedAttempts: pending.progress.attempts, unknownUsageAttempts: pending.progress.attempts, usageKnown: false });
     if (pending.controller) pending.controller.error(error);
     else pending.reject(error);
     this.#write({ cancel: id });
@@ -111,6 +126,13 @@ export class PythonTransport {
     if (!Number.isSafeInteger(reply.id)) throw new Error("Invalid request id");
     const pending = this.#pending.get(reply.id);
     if (!pending) return;
+    if (reply.event === "attempt") {
+      if (!reply.diagnostics) throw new Error("Attempt event omitted diagnostics");
+      pending.progress = reply.diagnostics;
+      if (reply.status !== undefined && reply.status >= 400) pending.recordFailure(new Error(`HTTP ${reply.status}: provider request failed before budget expiry`));
+      else if (reply.diagnostics.attempts > 1) pending.recordFailure(new Error("fetch failed: provider SDK retried after a transport failure"));
+      return;
+    }
     if (reply.diagnostics) pending.diagnostics?.push(reply.diagnostics);
     if (reply.event === "start") {
       if (pending.controller) throw new Error("Duplicate stream start");

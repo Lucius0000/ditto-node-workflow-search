@@ -1,6 +1,7 @@
 import type { BenchmarkTask, DatasetName, ScoreEvidence } from "../domain.js";
 import { DockerPythonJudge, extractPythonCandidate } from "./docker-python-judge.js";
 import { evaluateTasks } from "./evaluator.js";
+import { searchSubset } from "./search-subset.js";
 import { readBenchmarkSplit } from "./fixed-splits.js";
 import { requireRecord, requireString, requireStringArray } from "./io.js";
 import { lengthBucket } from "./sampling.js";
@@ -131,6 +132,7 @@ function loadedCode(
     tasks,
     identity,
     evaluate: (runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluateTasks(tasks, scorer, runner, options),
+    evaluateSearchSubset: (taskIds: readonly string[], runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluateTasks(searchSubset(split,tasks,taskIds),scorer,runner,options),
   });
 }
 

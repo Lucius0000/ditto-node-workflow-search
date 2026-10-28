@@ -1,5 +1,6 @@
 import type { BenchmarkTask, ScoreEvidence } from "../domain.js";
 import { evaluateTasks } from "./evaluator.js";
+import { searchSubset } from "./search-subset.js";
 import { readBenchmarkSplit } from "./fixed-splits.js";
 import { requireRecord, requireString, stableId } from "./io.js";
 import { lengthBucket } from "./sampling.js";
@@ -53,6 +54,7 @@ function loadedDrop(split: "validate" | "test", rows: readonly DropRow[], identi
     tasks,
     identity,
     evaluate: (runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluateTasks(tasks, scorer, runner, options),
+    evaluateSearchSubset: (taskIds: readonly string[], runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluateTasks(searchSubset(split,tasks,taskIds),scorer,runner,options),
   });
 }
 

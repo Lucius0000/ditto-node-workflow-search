@@ -11,17 +11,25 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js dist/benchmark/*.test.js scripts/night_watchdog.test.mjs",
+    "test": "npm run build && node --experimental-vm-modules --test --test-concurrency=2 dist/test/*.test.js dist/benchmark/*.test.js scripts/night_watchdog.test.mjs",
     "check": "npm run typecheck && npm test",
     "test:rounds": "node --env-file-if-exists=.env dist/round-test-runner.js",
-    "search:drop": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset drop",
-    "search:humaneval": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset humaneval",
-    "search:mbpp": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset mbpp",
-    "search:gsm8k": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset gsm8k",
-    "search:math": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset math"
+    "search:drop": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/unified/cli.js search --dataset drop",
+    "search:drop:legacy": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset drop",
+    "search:humaneval": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/unified/cli.js search --dataset humaneval",
+    "search:mbpp": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/unified/cli.js search --dataset mbpp",
+    "search:gsm8k": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/unified/cli.js search --dataset gsm8k",
+    "search:math": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/unified/cli.js search --dataset math",
+    "search": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/unified/cli.js search",
+    "test:frozen": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/unified/cli.js test",
+    "experiment:legacy:a": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/coding/drop-small.js --method a",
+    "experiment:legacy:small": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/coding/drop-small.js --method b",
+    "audit:prompts": "npm run build && node --experimental-vm-modules scripts/audit_unified_prompts.mjs"
   },
   "dependencies": {
-    "@codesoul-co/ditto": "0.1.1"
+    "@codesoul-co/ditto": "0.1.1",
+    "@codesoul-co/ditto-retrieval": "0.1.0",
+    "acorn": "8.15.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

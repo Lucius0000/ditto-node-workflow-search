@@ -84,7 +84,6 @@ test("semantic omissions, invalid types, nulls, raw quotes, and control ambiguit
     [JSON.stringify({ assessment, issues: [] }), "revise"],
     [JSON.stringify({ assessment, issues: [{ ...issue, suggestedFix: null }] }), "verify"],
     [JSON.stringify({ assessment: { ...assessment, issues: null } }), "verify"],
-    [JSON.stringify({ assessment: { ...assessment, revisedResult: "answer", issues: [] } }), "revise"],
     [JSON.stringify({ assessment: { ...assessment, issues: [{ severity: "guess", description: "wrong" }] } }), "verify"],
     ['{"assessment":{"passed":false,"summary":"said "hello""},"issues":[]}', "verify"],
     ['{"assessment":{"passed":false,"summary":"raw\nnewline"},"issues":[]}', "verify"],

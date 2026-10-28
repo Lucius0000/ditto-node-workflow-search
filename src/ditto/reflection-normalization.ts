@@ -33,7 +33,17 @@ function normalize(
   rejectDuplicateKeys(candidate);
 
   let structureChanged = false;
+  // A complete JSON string already supplies the answer. Only add the native
+  // message envelope; never infer a missing/null answer, verdict or issues.
+  const wrapAnswer = (container: Record<string, unknown>): void => {
+    if (typeof container.revisedResult !== "string" || !container.revisedResult.trim()) return;
+    container.revisedResult = { role: "assistant", content: container.revisedResult };
+    repairs.push("wrap-string-revisedResult");
+    structureChanged = true;
+  };
+  wrapAnswer(parsed);
   if (isObject(parsed.assessment)) {
+    wrapAnswer(parsed.assessment);
     for (const field of ["issues", "revisedResult"] as const) {
       if (!Object.hasOwn(parsed.assessment, field)) continue;
       const nested = parsed.assessment[field];

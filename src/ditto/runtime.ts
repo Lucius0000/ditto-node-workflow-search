@@ -1,17 +1,23 @@
-import { withReflectionFormatRepair } from "./reflection-format.js";
+import { withReflectionFormatRepair, type ReflectionRepairEvent } from "./reflection-format.js";
 import { budgetOutputBoundary } from "./budget-output.js";
 import { appendFile } from "node:fs/promises";
 import { createDitto, type DittoRuntime } from "@codesoul-co/ditto/runtime";
 import { Sandbox } from "@codesoul-co/ditto/runtime/sandbox";
 import { createContextWorker } from "@codesoul-co/ditto/worker/context";
-import { createHttpProvider, createInferWorker, type ModelProvider } from "@codesoul-co/ditto/worker/infer";
+import { createHttpProvider, createInferWorker, type ModelProvider, type SampleInput, type SampleOutput } from "@codesoul-co/ditto/worker/infer";
+import type { WorkerDefinition } from "@codesoul-co/ditto/worker";
+import type { ProviderCallDiagnostics } from "../domain.js";
+import { captureProviderDiagnostics, currentProviderDiagnostics } from "./provider-diagnostics.js";
 import { createMemoryWorker, type MemoryResources } from "@codesoul-co/ditto/worker/memory";
 import { createInteractionWorker, type RegisteredTool } from "@codesoul-co/ditto/worker/interaction";
 import { EXPERIMENT_GENERATION, EXPERIMENT_PROVIDER_OPTIONS, type ExperimentModelProfile } from "../model-profile.js";
 import type { ProviderSettings } from "../config.js";
 import { PythonTransport } from "./python-transport.js";
+import { withRequestTimeBudget, type TimeBudgetPolicy } from "../execution/time-budget.js";
+import { observeCapabilityWorkers } from "../workflow/capability-observer.js";
 
 export interface ExperimentRuntime {
+  readonly reflectionEvent?: (event: ReflectionRepairEvent) => void | Promise<void>;
   readonly runtime: DittoRuntime;
   readonly provider: ModelProvider;
   readonly providerName: string;
@@ -20,6 +26,14 @@ export interface ExperimentRuntime {
 }
 
 export interface ExperimentRuntimeOptions {
+  readonly workers?: readonly WorkerDefinition[];
+  readonly connectTimeoutMs?: number;
+  readonly beforeProviderCall?: (input: SampleInput) => void | Promise<void>;
+  readonly afterProviderCall?: (event: ProviderInvocationEvent) => void | Promise<void>;
+  readonly reflectionEvent?: (event: ReflectionRepairEvent) => void | Promise<void>;
+  readonly timeBudget?: TimeBudgetPolicy;
+  /** Reuse the one application-owned provider gate for task-local resources. */
+  readonly managedProvider?: boolean;
   readonly profile?: ExperimentModelProfile;
   readonly tools?: readonly RegisteredTool[];
   readonly memory?: MemoryResources;
@@ -27,13 +41,22 @@ export interface ExperimentRuntimeOptions {
   readonly provider?: ModelProvider;
 }
 
+export interface ProviderInvocationEvent {
+  readonly input: SampleInput;
+  readonly output?: SampleOutput;
+  readonly error?: unknown;
+  readonly diagnostics: readonly ProviderCallDiagnostics[];
+}
+
 /** npm Graph/Loop/Workers; injected transport uses AFlow's installed SDK. */
 export function createExperimentRuntime(settings: ProviderSettings, options: ExperimentRuntimeOptions = {}): ExperimentRuntime {
   const profile = options.profile ?? "math";
   if (profile === "automationbench" && !options.memory) throw new Error("AutomationBench requires application-owned Memory resources");
   const sandbox = new Sandbox(process.cwd(), { network: [new URL(settings.baseUrl).origin], tools: options.tools?.map(tool => tool.name) ?? [] });
-  const transport = options.provider ? undefined : new PythonTransport(settings, { profile });
-  // Per-request timeouts/retries live in OpenAI's SDK (connect 5s, read 600s).
+  const transport = options.provider ? undefined : new PythonTransport(settings, { profile,
+    ...(options.timeBudget ? { requestTimeoutMs: options.timeBudget.requestMs } : {}), connectTimeoutMs: options.connectTimeoutMs ?? 10_000 });
+  // Declared request budgets also reach the SDK; connection establishment has
+  // its own explicit 10s infrastructure limit, including unlimited requests.
   // A multi-call Node must not inherit a 600s total deadline including queue time.
   const nodeDeadline = 2 ** 31 - 1;
   const http = options.provider ?? createHttpProvider({
@@ -42,12 +65,14 @@ export function createExperimentRuntime(settings: ProviderSettings, options: Exp
     providerOptions: EXPERIMENT_PROVIDER_OPTIONS, timeoutMs: nodeDeadline,
   });
   const providerName = "deepseek";
-  const provider = limitProviderConcurrency(applyModelProfile(http, profile), settings.concurrency);
+  const provider = options.managedProvider && options.provider ? options.provider
+    : limitProviderConcurrency(withProviderLifecycle(withRequestTimeBudget(applyModelProfile(http, profile), options.timeBudget), options), settings.concurrency);
   const budget = budgetOutputBoundary();
   const checked = budget.provider(withReflectionFormatRepair(provider, async event => {
+    await options.reflectionEvent?.(event);
     if (process.env.DITTO_PROVIDER_LOG) await appendFile(process.env.DITTO_PROVIDER_LOG, JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n", "utf8");
   }));
-  const runtime = createDitto({ sandbox: sandbox.policy, workers: [
+  const runtime = createDitto({ sandbox: sandbox.policy, workers: observeCapabilityWorkers([
     createContextWorker(profile === "automationbench" ? { policy: {
       // Highest values accepted by the public npm policy validator. Referenced
       // Context items can carry larger inline payloads without a token ceiling.
@@ -58,13 +83,63 @@ export function createExperimentRuntime(settings: ProviderSettings, options: Exp
       defaultProvider: providerName, timeoutMs: nodeDeadline,
     })),
     ...(options.memory ? [createMemoryWorker(options.memory)] : []),
+    ...(options.workers ?? []),
     ...(profile === "automationbench" || options.tools ? [createInteractionWorker({ tools: options.tools ?? [],
       ...(profile === "automationbench" ? { output: { async deliver(input) { return { deliveryId: input.deliveryId, status: "accepted" as const }; } } } : {}),
     })] : []),
-  ] });
-  return Object.freeze({ runtime, provider, providerName, model: settings.model,
+  ]) });
+  return Object.freeze({ runtime, provider, providerName, model: settings.model,...(options.reflectionEvent?{reflectionEvent:options.reflectionEvent}:{}),
     async close() { try { await runtime.close(); } finally { await transport?.close(); } },
   });
+}
+
+/** Admission occurs after the concurrency queue; every nested native/repair call is charged. */
+export function withProviderLifecycle(provider: ModelProvider, hooks: Pick<ExperimentRuntimeOptions, "beforeProviderCall" | "afterProviderCall">): ModelProvider {
+  if (!hooks.beforeProviderCall && !hooks.afterProviderCall) return provider;
+  return {
+    async invoke(input, options) {
+      options.signal.throwIfAborted();
+      await hooks.beforeProviderCall?.(input);
+      const parent = currentProviderDiagnostics();
+      return captureProviderDiagnostics(async diagnostics => {
+        let output: SampleOutput | undefined;
+        let error: unknown;
+        try { output = await provider.invoke(input, options); return output; }
+        catch (failure) { error = failure; throw failure; }
+        finally {
+          parent?.push(...diagnostics);
+          await hooks.afterProviderCall?.({ input, diagnostics, ...(output ? { output } : {}), ...(error !== undefined ? { error } : {}) });
+        }
+      });
+    },
+    ...(provider.stream ? {
+      async *stream(input: SampleInput, options: { signal: AbortSignal }) {
+        options.signal.throwIfAborted();
+        await hooks.beforeProviderCall?.(input);
+        const parent = currentProviderDiagnostics();
+        const diagnostics: ProviderCallDiagnostics[] = [];
+        let output: SampleOutput | undefined;
+        let error: unknown;
+        const iterator = provider.stream!(input, options)[Symbol.asyncIterator]();
+        const { withProviderDiagnostics } = await import('./provider-diagnostics.js');
+        try {
+          while (true) {
+            const item = await withProviderDiagnostics(diagnostics, () => iterator.next());
+            if (item.done) break;
+            if (item.value.type === 'result') output = item.value.output;
+            yield item.value;
+          }
+        } catch (failure) { error = failure; throw failure; }
+        finally {
+          try { await withProviderDiagnostics(diagnostics, async () => { await iterator.return?.(); }); }
+          finally {
+            parent?.push(...diagnostics);
+            await hooks.afterProviderCall?.({ input, diagnostics, ...(output ? { output } : {}), ...(error !== undefined ? { error } : {}) });
+          }
+        }
+      },
+    } : {}),
+  };
 }
 
 /** Enforce the same policy across SAMPLE, TRAJECTORY, optimizer and stream calls. */

@@ -18,6 +18,74 @@ spec.loader.exec_module(bridge)
 
 
 class BridgeTest(unittest.TestCase):
+    def test_opt_in_attempt_progress_exposes_counts_and_http_failures_without_request_data(self):
+        replies = []
+
+        async def exercise():
+            diagnostics = {"requestId": 7, "attempts": 0, "failedAttempts": 0, "unknownUsageAttempts": 0,
+                           "usageKnown": False, "inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+            token = bridge._attempt_context.set(diagnostics)
+            reporting = bridge._attempt_reporting.set(True)
+            try:
+                request = httpx.Request("POST", "https://example.invalid", content="private request")
+                await bridge.record_http_request(request)
+                await bridge.record_http_response(httpx.Response(503, request=request))
+            finally:
+                bridge._attempt_reporting.reset(reporting)
+                bridge._attempt_context.reset(token)
+
+        with patch.object(bridge, "emit", replies.append), patch.object(bridge, "log", lambda _event: None):
+            asyncio.run(exercise())
+        self.assertEqual([item["event"] for item in replies], ["attempt", "attempt"])
+        self.assertEqual(replies[-1]["status"], 503)
+        self.assertEqual(replies[-1]["diagnostics"]["attempts"], 1)
+        self.assertEqual(replies[-1]["diagnostics"]["failedAttempts"], 1)
+        self.assertNotIn("private request", json.dumps(replies))
+
+    def test_long_and_unlimited_budgets_replace_hidden_read_deadline_keep_connect_separate(self):
+        observed = []
+        overall = []
+        real_timeout = asyncio.timeout
+
+        def capture_timeout(value):
+            overall.append(value)
+            return real_timeout(value)
+
+        class FakeStream:
+            async def __aiter__(self):
+                yield SimpleNamespace(model_dump=lambda **kwargs: {
+                    "choices": [{"index": 0, "delta": {"content": "2"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+            async def close(self):
+                pass
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=self)
+                self.http = kwargs["http_client"]
+
+            async def create(self, **kwargs):
+                timeout = kwargs["timeout"]
+                observed.append((timeout.read, timeout.write, timeout.pool, timeout.connect))
+                return FakeStream()
+
+            async def close(self):
+                await self.http.aclose()
+
+        requests = [{"id": index + 1, "timeoutMs": limit, "connectTimeoutMs": 10000,
+                     "body": {"model": "fixture", "messages": []}}
+                    for index, limit in enumerate([1200000, None])]
+        output = io.StringIO()
+        with patch.object(bridge, "AsyncOpenAI", FakeClient), patch.object(bridge.asyncio, "timeout", capture_timeout), \
+             patch.object(bridge.sys, "stdin", io.StringIO("".join(json.dumps(item) + "\n" for item in requests))), \
+             patch.object(bridge.sys, "stdout", output), patch.dict(os.environ, {
+                 "CODE_SOUL_API_KEY": "fixture", "CODE_SOUL_BASE_URL": "https://example.invalid", "DITTO_PROVIDER_LOG": ""}):
+            asyncio.run(bridge.main())
+        self.assertEqual(overall, [1200, None])
+        self.assertEqual(observed, [(1200, 1200, 1200, 10), (None, None, None, 10)])
+        self.assertEqual([json.loads(line)["status"] for line in output.getvalue().splitlines()], [200, 200])
+
     def test_error_diagnostics_allowlist_nested_fields_and_header_request_id(self):
         request = httpx.Request("POST", "https://example.invalid", headers={"Authorization": "Bearer hidden-header"})
         response = httpx.Response(402, request=request, headers={

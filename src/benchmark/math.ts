@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BenchmarkTask } from "../domain.js";
 import { evaluateTasks } from "./evaluator.js";
+import { searchSubset } from "./search-subset.js";
 import { AFlowMathScorer } from "./aflow-math-scorer.js";
 import { readBenchmarkSplit } from "./fixed-splits.js";
 import { requireRecord, requireString } from "./io.js";
@@ -54,6 +55,12 @@ function loadedMath(split: "validate" | "test", rows: readonly MathRow[], identi
       } finally {
         await scorer.close();
       }
+    },
+    async evaluateSearchSubset(taskIds: readonly string[], runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) {
+      const selected=searchSubset(split,tasks,taskIds);
+      const scorer=new AFlowMathScorer(references);
+      try {await scorer.preflight();return await evaluateTasks(selected,scorer,runner,options);}
+      finally {await scorer.close();}
     },
   });
 }

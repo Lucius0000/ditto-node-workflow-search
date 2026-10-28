@@ -3,11 +3,11 @@ import { EXPERIMENT_EXECUTION, EXPERIMENT_GENERATION, EXPERIMENT_PROVIDER_OPTION
 /** New runs share this policy; historical manifests remain immutable. */
 export const GENERATION = EXPERIMENT_GENERATION;
 export const PROTOCOL = Object.freeze({
-  id: "mflow-fixed-flash-v6",
+  id: "mflow-fixed-flash-v9",
   searchPolicy: "optimizer-directed-workflow-v1",
   budgetUnit: "completed-valid-workflow-evaluation-including-initial",
   checkerPolicy: "checker-semantics-v1",
-  reflectionAdapter: "reflect-format-v2",
+  reflectionAdapter: "reflect-format-v3",
   generation: GENERATION,
   providerOptions: EXPERIMENT_PROVIDER_OPTIONS,
   thinking: "disabled",
@@ -24,8 +24,8 @@ export const PROTOCOL = Object.freeze({
   convergenceZ: 0,
   convergenceConsecutiveRounds: 5,
   providerAttempts: 3,
-  connectTimeoutMs: 5_000,
-  readTimeoutMs: 600_000,
+  connectTimeoutMs: 10_000,
+  readTimeoutMs: "explicit-run-policy",
   workflowAttempts: 5,
   workflowRetryDelayMs: 1_000,
 });

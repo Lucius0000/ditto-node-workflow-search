@@ -16,6 +16,9 @@ export interface ReflectionRepairEvent {
   /** Audit evidence only; never supplied to the optimizer or benchmark scorer. */
   readonly rawContent?: SampleOutput["message"]["content"];
   readonly normalizedContent?: string;
+  /** Public model messages only: deliberately exclude model options and credentials. */
+  readonly requestMessages?: readonly { readonly role: string; readonly content: unknown }[];
+  readonly finishReason?: SampleOutput["finishReason"];
 }
 
 /** Format-only application adapter; the published REFLECT Node validates the result. */
@@ -33,6 +36,7 @@ export function withReflectionFormatRepair(provider: ModelProvider, emit: (event
       let request: SampleInput = { ...input, generation: GENERATION };
       for (let attempt = 1; attempt <= 3; attempt++) {
         options.signal.throwIfAborted();
+        const requestMessages = request.messages.map(({ role, content }) => ({ role, content: structuredClone(content) }));
         const response = await provider.invoke(request, options);
         usages.push(response.usage);
         // Transport failures and normal output-length stops keep their existing semantics.
@@ -49,11 +53,11 @@ export function withReflectionFormatRepair(provider: ModelProvider, emit: (event
           observations.push({ attempt, rawContent: response.message.content, normalizedContent: normalized.content, repairs: normalized.repairs });
           if (normalized.repairs.length) await emit({ phase: "reflect-format-repair", outcome: "normalized", attempt, mode,
             taskId: input.metadata?.taskId, nodeId: input.metadata?.nodeId, repairs: normalized.repairs,
-            rawContent: response.message.content, normalizedContent: normalized.content });
+            rawContent: response.message.content, normalizedContent: normalized.content, requestMessages, finishReason: response.finishReason });
           if (attempt > 1) await emit({ phase: "reflect-format-repair", outcome: "recovered", attempt, mode, taskId: input.metadata?.taskId, nodeId: input.metadata?.nodeId });
           return { ...response, usage: aggregateUsage(usages), message: { ...response.message, content: normalized.content,
             metadata: { ...response.message.metadata, reflectionFormat: {
-              policy: "reflect-format-v2", attempts: attempt, repairs: attempt - 1,
+              policy: "reflect-format-v3", attempts: attempt, repairs: attempt - 1,
               normalizations: observations.reduce((sum, observation) => sum + (observation.repairs?.length ?? 0), 0),
               usageKnown: usages.every((usage) => usage?.inputTokens !== undefined && usage.outputTokens !== undefined), observations,
             } },
@@ -64,7 +68,8 @@ export function withReflectionFormatRepair(provider: ModelProvider, emit: (event
         if (semanticAnchor === undefined) error += "; substantive fields cannot be safely preserved by format-only retries";
         observations.push({ attempt, rawContent: response.message.content, error });
         await emit({ phase: "reflect-format-repair", outcome: exhausted ? "exhausted" : "retry", attempt, mode,
-          taskId: input.metadata?.taskId, nodeId: input.metadata?.nodeId, error, rawContent: response.message.content });
+          taskId: input.metadata?.taskId, nodeId: input.metadata?.nodeId, error, rawContent: response.message.content,
+          requestMessages, finishReason: response.finishReason });
         if (exhausted) throw new Error(`[REFLECT_FORMAT_ERROR] Invalid reflection after ${attempt} response(s): ${error}`);
         // Retain prior failures and numbered feedback: deterministic retries must not repeat the same request.
         request = { ...request, messages: [

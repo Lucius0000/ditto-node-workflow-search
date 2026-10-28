@@ -25,7 +25,7 @@ test("recovery code identity changes when the MFlow scorer or dependency pin cha
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("v2 source identity normalizes only CRLF text line endings", async () => {
+test("v3 source identity normalizes only CRLF text line endings", async () => {
   const root = await mkdtemp(join(tmpdir(), "ditto-code-line-endings-"));
   try {
     await mkdir(join(root, "src"));

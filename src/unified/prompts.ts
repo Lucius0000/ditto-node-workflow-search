@@ -1,0 +1,23 @@
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+
+export const UNIFIED_PROMPT_VERSION = 'ditto-system-cross-dataset-v1';
+
+/** Frozen across datasets/candidates. Task-specific instructions belong to the user payload. */
+export const UNIFIED_OPTIMIZER_SYSTEM = readFileSync(new URL('../../prompts/optimizer-system.en.md', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const EXPECTED_SYSTEM_SHA256 = 'b24585922532b06f09bc927f5f9471bd6e40fe68af123769d2b7dd6364daa00a';
+if (createHash('sha256').update(UNIFIED_OPTIMIZER_SYSTEM).digest('hex') !== EXPECTED_SYSTEM_SHA256) {
+  throw Error('Frozen optimizer system changed: create an explicit new prompt/protocol version instead of silently editing it');
+}
+
+export const UNIFIED_OPTIMIZER_SYSTEM_SHA256 = EXPECTED_SYSTEM_SHA256;
+export const UNIFIED_SYSTEM_PROMPT = UNIFIED_OPTIMIZER_SYSTEM;
+export const UNIFIED_SYSTEM_PROMPT_SHA256 = UNIFIED_OPTIMIZER_SYSTEM_SHA256;
+
+export const UNIFIED_DEFINITION_GUIDE = `A version:2 Graph/Loop definition has graphs:[{id,nodes:[{id,type,dependencies:[],config:{...}}]}], loop:{entryGraphId,maxGraphRuns,transitions,state?,stateUpdates?}, output:{answer:Binding} (legacy output:{nodeId,view:"answer"} is accepted), optional tools and mutation.
+Native output bindings use {ref:["task","prompt"]}, {ref:["nodes",nodeId,...nativeOutputPath]}, {ref:["prior",nodeId,...path]} or {ref:["state",key,...path]}. The nodes/prior namespaces contain normalized native outputs after the host unwraps NodeResult; SAMPLE is message.content, TRAJECTORY/DELIBERATE result.content, REFLECT assessment/issues/revisedResult, Context items, and tool structuredContent. A missing required path is an engineering error; coalesce must explicitly handle optional/unvisited values.
+Pure binding operators are {literal:JSON}, {get:{value:Binding,path:[]}}, {parse:Binding}, {json:Binding}, {concat:[Binding,...]}, {coalesce:[Binding,...]} and {append:[arrayBinding,newValue]}. Arrays/objects recursively bind values. Existing semantic Sources {from:"task",field:"prompt"|"outputInstruction"}, {from:"node",nodeId,view}, {from:"previous",nodeId,view,fallback}, {from:"literal",value}, {from:"join",parts,separator} remain supported. No dangerous prototype paths, code evaluation or arbitrary property access are available.
+Infer configs expose user instruction/evidence and operation fields, not system messages, providers or SDK envelopes. SAMPLE {instruction,evidence?,user?,outputFormat?:"text"|"json"}; TRAJECTORY {instruction,strategy,options?,maxSteps?,evidence?,user?}; REFLECT {target,mode,criteria:string[],feedback?,user?}; DELIBERATE {candidates,mode,user?}. user is an optional Binding appended to the original public task; outputFormat:"json" declares structured model content for a later parse expression. The host injects original task, model/generation and native interface wrappers. Use supported native Sources/bindings as data, never callbacks.
+Context: LOAD {sources:[Binding,...]}, SELECT {context,query?,limit?,maxTokens?}, UPDATE {context,add?,removeIds?}, COMPRESS {context,maxItems?,maxTokens?}. Memory: WRITE {content}, GET/DELETE {ids}, UPDATE {ids,content}, SEARCH {query,limit?}, QUERY {filter?,limit?}. Cache: LOOKUP/INVALIDATE {key}, WRITE {key,value,ttlMs?}. ACT.TOOL {tool,arguments:{name:Binding}}, OBSERVE {result}. Registered host tools are bounded_arithmetic({expression}) -> structuredContent {value,...} and literal_text_find({text,needle}); generated pure tools are optional. RETRIEVAL.SEARCH {query:Binding,target?:"task-public",limit?:1..100} searches the current task's public materials, returning candidates; query text and evidence selection are user strategy, target authorization is not.
+Loop transitions are {kind:"end"}, {kind:"next",graphId}, {kind:"repeat",graphId,maxVisits,until,nextGraphId?}, or {kind:"switch",cases:[{when,graphId}],defaultGraphId?}. State initializes fresh per task; stateUpdates expressions for a Graph read its outputs and old state and update declared keys simultaneously. Repeats read prior outputs with explicit first-visit fallback. Conditions are supplied by the host schema; no executable control code.
+All IDs are globally unique; same-Graph values require dependencies. Every required cross-Graph producer must have executed on the route, and final output must exist on every ending route. Pure computations need actual content/control consumption; scheduling alone is not evidence consumption. Use the host's exact schema/mutation limits when this concise guide and operation-specific detail differ.`;

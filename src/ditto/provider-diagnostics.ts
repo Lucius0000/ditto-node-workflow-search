@@ -9,6 +9,11 @@ export function captureProviderDiagnostics<T>(operation: (records: ProviderCallD
   return diagnostics.run(records, () => operation(records));
 }
 
+/** Resume an async iterator under the same per-call ledger on every next(). */
+export function withProviderDiagnostics<T>(records: ProviderCallDiagnostics[], operation: () => Promise<T>): Promise<T> {
+  return diagnostics.run(records, operation);
+}
+
 /** Capture the array before crossing the child-process event callback boundary. */
 export function currentProviderDiagnostics(): ProviderCallDiagnostics[] | undefined {
   return diagnostics.getStore();

@@ -12,14 +12,17 @@ import { RunStore } from "./run/store.js";
 import { loadDirectedResume } from "./run/directed-resume.js";
 import { WorkflowExecutor } from "./workflow/executor.js";
 import { GENERATION, PROTOCOL } from "./protocol.js";
+import { createWorkflowRunner } from "./workflow/runner.js";
+import { assertExplicitTimeBudget } from "./execution/time-budget.js";
 import { assertBaselinePromptProfile, baselinePromptProfile, baselinePrompts } from "./benchmark/baseline-prompts.js";
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
+  assertExplicitTimeBudget(options.timeBudget);
   const provider = Object.freeze({ ...loadProviderSettings(),
     concurrency: options.command === "search" ? options.searchProviderConcurrency : options.testProviderConcurrency });
-  const experiment = createExperimentRuntime(provider);
-  const executor = new WorkflowExecutor(experiment.runtime, experiment.providerName, experiment.model);
+  const experiment = createExperimentRuntime(provider, { timeBudget: options.timeBudget });
+  const executor = createWorkflowRunner(experiment, provider);
   try {
     if (options.command === "search") await search(options, provider, experiment, executor);
     else await testFrozen(options, provider, executor);
@@ -32,7 +35,7 @@ async function search(
   options: ExperimentOptions,
   provider: ProviderSettings,
   experiment: ExperimentRuntime,
-  executor: WorkflowExecutor,
+  executor: Pick<WorkflowExecutor, "run">,
 ): Promise<void> {
   const store = await RunStore.create(options.outputRoot, options.dataset);
   const loaded = await openBenchmark(options, "validate");
@@ -41,6 +44,7 @@ async function search(
   const restored = options.resumeDir ? await loadDirectedResume(options.resumeDir, options.resumeRound!, options.dataset) : undefined;
   if (restored) {
     const prior = restored.manifest;
+    if (JSON.stringify(prior.timeBudget) !== JSON.stringify(options.timeBudget)) throw Error("Resume time budget differs; a new run is required");
     assertBaselinePromptProfile(options.dataset, prior.promptProfile);
     const priorSearch = prior.search as Record<string, unknown>;
     const expected = { rounds: options.rounds, repeats: options.repeats, testRepeats: options.testRepeats,
@@ -68,6 +72,7 @@ async function search(
     evaluationConcurrency: options.evaluationConcurrency,
     independentRoundTests: { checkpointDirectory: "checkpoints", resultsUsedBySearch: false },
     generation: GENERATION,
+    timeBudget: options.timeBudget,
     protocol: PROTOCOL,
     ...(baselinePromptProfile(options.dataset) ? { promptProfile: baselinePromptProfile(options.dataset) } : {}),
     ...(restored ? { resumedFrom: { directory: options.resumeDir, completedValidEvaluations: restored.state.validEvaluations,
@@ -102,12 +107,14 @@ async function search(
     const recovery = await CaseRecovery.open(join(options.outputRoot, "case-recovery"), {
       codeHash: await evaluationCodeHash(process.cwd()), plan, model: provider.model, endpoint: provider.baseUrl,
       protocol: PROTOCOL, generation: GENERATION, metric: metricProfile(options.dataset), dataHash,
+      timeBudget: options.timeBudget,
       selectedIds: loaded.tasks.map(task => task.id), promptProfile: baselinePromptProfile(options.dataset), repeats: options.repeats,
     }, { evaluationConcurrency: options.evaluationConcurrency, providerConcurrency: provider.concurrency });
     const summary = await loaded.evaluate(
       (task) => executor.run(plan, task),
       {
         repeats: options.repeats,
+        ...(options.timeBudget ? { timeBudget: options.timeBudget } : {}),
         priorCases: recovery.priorCases,
         concurrency: options.evaluationConcurrency,
         retryAttempts: 5,
@@ -190,13 +197,14 @@ async function search(
 async function testFrozen(
   options: ExperimentOptions,
   provider: ProviderSettings,
-  executor: WorkflowExecutor,
+  executor: Pick<WorkflowExecutor, "run">,
 ): Promise<void> {
   if (!options.runDir) throw new Error("test requires --run-dir");
   const store = await RunStore.open(options.runDir);
   const manifest = await store.readManifest();
   assertBaselinePromptProfile(options.dataset, manifest.promptProfile);
   if (manifest.model !== provider.model || manifest.endpoint !== provider.baseUrl
+    || JSON.stringify(manifest.timeBudget) !== JSON.stringify(options.timeBudget)
     || JSON.stringify(manifest.protocol) !== JSON.stringify(PROTOCOL)
     || JSON.stringify(manifest.generation) !== JSON.stringify(GENERATION)
     || manifest.dittoVersion !== await dittoVersion()
@@ -220,6 +228,7 @@ async function testFrozen(
     (task) => executor.run(plan, task),
     {
       repeats: options.testRepeats,
+      ...(options.timeBudget ? { timeBudget: options.timeBudget } : {}),
       concurrency: options.evaluationConcurrency,
       retryAttempts: 5,
       async onCase(progress) {

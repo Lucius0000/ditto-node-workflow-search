@@ -12,3 +12,6 @@ data/*
 !data/README.md
 .DS_Store
 coverage/
+.provider-venv/
+.tmp*/
+reports/private/
