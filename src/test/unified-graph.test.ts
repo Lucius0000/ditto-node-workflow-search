@@ -49,3 +49,31 @@ test('only an explicit JSON output contract makes invalid model JSON a quality z
 test('wrong field conversion remains engineering-invalid with the original model evidence',async()=>{
  const d=structuredClone(BASELINE_DEFINITION);d.output={answer:ref('solve','message','missing')};await assert.rejects(run(d,'42'),(e:any)=>e.code==='B_AGENT_CONTRACT'&&e.partialRun.rawNodeOutputs.solve.output.message.content==='42'&&e.partialRun.modelFailure===undefined);
 });
+
+test('native UPDATE/COMPRESS items and Cache WRITE key match the installed Worker outputs',async()=>{
+ const d=structuredClone(BASELINE_DEFINITION);
+ d.graphs[0]!.nodes.splice(1,0,
+  {id:'update',type:'CONTEXT.UPDATE',dependencies:['context'],config:{context:{from:'node',nodeId:'context',view:'context'},add:{literal:'Public evidence note'}}},
+  {id:'compress',type:'CONTEXT.COMPRESS',dependencies:['update'],config:{context:{from:'node',nodeId:'update',view:'context'},maxItems:2}},
+  {id:'store',type:'INFER.CACHE.WRITE',dependencies:['compress'],config:{key:{literal:'public'},value:ref('compress','items')}});
+ const solver=d.graphs[0]!.nodes.at(-1)!;solver.dependencies=['update','compress','store'];solver.config.evidence=[ref('update','items'),ref('compress','items'),ref('store','key')];
+ validateDefinition(d);const {result}=await run(d);assert.equal(result.answer,'42');assert(Array.isArray(result.rawNodeOutputs.update.items));assert(Array.isArray(result.rawNodeOutputs.compress.items));
+ const wrong=structuredClone(d);wrong.graphs[0]!.nodes.at(-1)!.config.evidence=[ref('compress','context','items')];assert.throws(()=>validateDefinition(wrong),/Unknown native output field context/);
+});
+
+test('collection repair errors explain evidence wrappers and distinguish checker feedback from instructions',()=>{
+ const d=structuredClone(BASELINE_DEFINITION);d.graphs[0]!.nodes.at(-1)!.config.evidence=ref('context','items');
+ assert.throws(()=>validateDefinition(d),/must be Binding\[\].*wrap a single binding/);
+ d.graphs[0]!.nodes.at(-1)!.config.evidence=[];d.graphs[0]!.nodes.push({id:'check',type:'INFER.REASONING.REFLECT',dependencies:['solve'],config:{target:ref('solve','message','content'),mode:'verify',criteria:['Check the task'],feedback:'Review the answer'}});
+ d.output={nodeId:'check',view:'answer'};assert.throws(()=>validateDefinition(d),/prior checker references, not instruction text/);
+});
+
+test('pure upstream results consumed by Memory/Cache writers remain live without a direct reader-write edge',async()=>{
+ const d=structuredClone(BASELINE_DEFINITION);d.graphs[0]!.nodes.splice(1,0,
+  {id:'prepare',type:'CONTEXT.SELECT',dependencies:['context'],config:{context:{from:'node',nodeId:'context',view:'context'},limit:1}},
+  {id:'store',type:'INFER.CACHE.WRITE',dependencies:['prepare'],config:{key:{literal:'public'},value:ref('prepare','context','items')}},
+  {id:'lookup',type:'INFER.CACHE.LOOKUP',dependencies:['store'],config:{key:{literal:'public'}}});
+ d.graphs[0]!.nodes.at(-1)!.dependencies=['lookup'];d.graphs[0]!.nodes.at(-1)!.config.evidence=[ref('lookup','value')];
+ validateDefinition(d);const {result}=await run(d);assert.equal(result.answer,'42');assert.equal(result.rawNodeOutputs.lookup.output.hit,true);
+ const unused=structuredClone(d);unused.graphs[0]!.nodes.find(n=>n.id==='store')!.config.value={literal:'not using prepare'};assert.throws(()=>validateDefinition(unused),/Unused node prepare/);
+});

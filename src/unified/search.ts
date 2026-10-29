@@ -123,7 +123,13 @@ function publicContractError(error:unknown):string {
 }
 
 export function parseUnifiedProposal(content:string):{rationale:string;definition:GraphDefinition}{
-  const value=JSON.parse(content.trim()) as Record<string,unknown>;
+  let value:Record<string,unknown>;
+  try { value=JSON.parse(content.trim()) as Record<string,unknown>; }
+  catch (error) {
+    const detail=error instanceof Error?error.message:String(error),position=/position (\d+)/.exec(detail);
+    const offset=position?Number(position[1]):0,snippet=content.trim().slice(Math.max(0,offset-80),offset+80);
+    throw Error(`Invalid proposal JSON: ${detail}. Near ${JSON.stringify(snippet)}. Escape quotes/backslashes/newlines inside strings; return one complete JSON object.`);
+  }
   if(!value||Array.isArray(value)||Object.keys(value).some(key=>!['rationale','definition'].includes(key))
     ||typeof value.rationale!=='string'||!value.rationale.trim()||value.rationale.length>8000||!Object.hasOwn(value,'definition'))throw Error('Return exactly rationale and definition');
   const definition=validateDefinition(value.definition);
