@@ -23,6 +23,8 @@ Automation tools execute only inside the declared Graph/Loop. Public schemas and
 
 Missing required Automation decision fields become model-format loss only under the exact host-owned response instruction and public tool schema. Generic JSON path errors remain binding failures; `coalesce` can still supply an optional default, including `api_search.top_k = 5`.
 
+For multi-fence Python responses, extraction keeps the first entry-point block and supporting declaration blocks. A syntax-only Python AST check excludes separate REPL transcripts, prose, tests and usage fragments; it never executes model code or chooses blocks by private-test results. This check uses `DITTO_PROVIDER_PYTHON` (default `python`) and preserves imports, constants and helper definitions.
+
 Code judging requires a successful `docker-ready` check and a pre-pulled immutable image. The generated program has a 12-second in-container deadline; the 60-second host watchdog is an infrastructure boundary. Fixed marker printing and early exit cannot satisfy the randomized completion marker. This check is not a proof against arbitrary malicious test-harness introspection.
 
 Every run freezes source, compiled artifacts, prompts, definitions, data membership/order, provider and official-environment identity. It archives HTTP payloads without authentication headers, raw responses, actual node inputs/outputs, graded programs/worlds and known/unknown usage. Results containing private tests/worlds remain outside the public repository. A changed identity cannot resume an old run.

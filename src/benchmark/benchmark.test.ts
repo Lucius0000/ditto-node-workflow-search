@@ -32,7 +32,7 @@ test("candidate extraction prefers a fenced complete entry point", () => {
   assert.equal(completion, "def answer(x):\n    if x:\n        return x\n    return 0");
 });
 
-test("candidate extraction preserves public helpers, all Python blocks and body indentation", () => {
+test("candidate extraction preserves public helpers, support blocks and body indentation", () => {
   const preamble = "from math import sqrt\n\ndef helper(x):\n    return sqrt(x)";
   const entry = "def answer(x):\n    return helper(x)";
   assert.equal(extractPythonCandidate(entry, `${preamble}\n\ndef answer(x):`, "answer"), `${preamble}\n\n${entry}`);
@@ -40,6 +40,32 @@ test("candidate extraction preserves public helpers, all Python blocks and body 
   for (const body of ["    if x:\n        return x\n    return 0", "```python\n    if x:\n        return x\n    return 0\n```", "\n    if x:\n        return x\n    return 0\n"]) {
     assert.equal(extractPythonCandidate(body, "def answer(x):", "answer"), "def answer(x):\n    if x:\n        return x\n    return 0");
   }
+});
+
+test("candidate extraction excludes REPL, prose, tests and indented usage fences", () => {
+  const entry = "def answer(x):\n    return helper(x)";
+  const helper = "from math import sqrt\n\ndef helper(x):\n    return sqrt(x)";
+  const blocks = [
+    "```\na(n, m) = a(n-1, m)\n```",
+    `\`\`\`python\n${entry}\n\`\`\``,
+    "```python\n>>> answer(4)\n2.0\n```",
+    "```\nRow 0: 1\nRow 1: 1 2\n```",
+    "```python\n  return sorted(x, reverse=True)\n```",
+    "```python\nassert answer(4) == 2\n```",
+    "```python\nx = [1, 2]\nprint(answer(x))\n```",
+    `\`\`\`\n${helper}\n\`\`\``,
+  ];
+  assert.equal(extractPythonCandidate(blocks.join("\n"), "def answer(x):", "answer"), `${entry}\n\n${helper}`);
+});
+
+test("support-block parsing preserves constants, multiline imports and decorated helpers without executing them", () => {
+  const support = "from functools import (\n    lru_cache,\n)\nFACTOR = 2\n\n@lru_cache(None)\ndef helper(x):\n    \"\"\"计算倍率。\"\"\"\n    return x * FACTOR";
+  const entry = "def answer(x):\n    return helper(x)";
+  assert.equal(extractPythonCandidate(`\`\`\`python\n${support}\n\`\`\`\n\`\`\`python\n${entry}\n\`\`\``, "def answer(x):", "answer"), `${support}\n\n${entry}`);
+  // An invalid first implementation remains the candidate, rather than
+  // silently choosing a later implementation that happens to parse.
+  const invalid = "def answer(x):\n    return x +";
+  assert.equal(extractPythonCandidate(`\`\`\`python\n${invalid}\n\`\`\`\n\`\`\`python\n${entry}\n\`\`\``, "def answer(x):", "answer"), invalid);
 });
 
 test("MBPP body completion excludes prose and retains the actual graded candidate privately", async () => {

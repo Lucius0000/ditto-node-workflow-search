@@ -1,6 +1,7 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { CodeJudge, CodeJudgeRequest, CodeJudgeResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -230,8 +231,15 @@ function compactDiagnostics(stdout: string, stderr: string, passed: boolean): st
 
 export function extractPythonCandidate(modelOutput: string, publicPrompt: string, entryPoint: string): string {
   const fences = [...modelOutput.matchAll(/```(?:python|py)?[^\S\r\n]*\r?\n([\s\S]*?)```/gi)].map((match) => match[1]!.trimEnd());
-  const fencedWithEntry = fences.find((candidate) => containsEntryPoint(candidate, entryPoint));
-  const extracted = fencedWithEntry ? fences.join("\n\n") : fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
+  const entryIndex = fences.findIndex((candidate) => containsEntryPoint(candidate, entryPoint));
+  const fencedWithEntry = fences[entryIndex];
+  // Keep the first complete entry-point block unchanged. Other fences may be
+  // REPL transcripts, prose, tests or partial usage snippets, rather than code
+  // belonging to the solution. Parse only their public syntax; never run them.
+  const support = fencedWithEntry && fences.length > 1 ? supportingPythonBlocks(fences) : [];
+  const extracted = fencedWithEntry ? fences.filter((block, index) => index === entryIndex ||
+    (!containsEntryPoint(block, entryPoint) && support[index])).join("\n\n")
+    : fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
   if (containsEntryPoint(extracted, entryPoint)) {
     // Public imports and helpers precede HumanEval's incomplete entry point.
     const escaped = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -244,6 +252,18 @@ export function extractPythonCandidate(modelOutput: string, publicPrompt: string
   const commonIndent = indents.length ? Math.min(...indents) : 0;
   const body = lines.map((line) => line.trim() ? `    ${line.slice(commonIndent)}` : "").join("\n");
   return `${publicPrompt.trimEnd()}\n${body}`;
+}
+
+function supportingPythonBlocks(blocks: readonly string[]): boolean[] {
+  const python = process.env.DITTO_PROVIDER_PYTHON?.trim() || "python";
+  const script = fileURLToPath(new URL("../../scripts/python_support_blocks.py", import.meta.url));
+  const result: unknown = JSON.parse(execFileSync(python, ["-I", "-B", "-X", "utf8", script], {
+    input: JSON.stringify(blocks), encoding: "utf8", timeout: 5_000, maxBuffer: 1024 * 1024, windowsHide: true,
+  }));
+  if (!Array.isArray(result) || result.length !== blocks.length || result.some(value => typeof value !== "boolean")) {
+    throw new Error("Invalid Python support-block syntax classification");
+  }
+  return result as boolean[];
 }
 
 function stripPlainLanguagePrefix(output: string): string {
