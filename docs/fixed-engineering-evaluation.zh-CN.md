@@ -21,6 +21,8 @@ node --experimental-vm-modules dist/unified/fixed-engineering.js <protocol.json>
 
 Automation工具只在声明的Graph/Loop内执行，公开schema和观察进入下一次推理，私有世界、contract及评分留在评估端。评分使用真实最终世界，partialCredit只作诊断。模型格式错误和声明预算耗尽计有效0；provider、bridge、judge故障仍为工程无效。judge-only恢复必须使用原world/prediction，不重新生成答案。取消活动官方操作会丢弃bridge，并把世界结果记为未知；这不提供回滚保证。
 
+并发额度刷新共享同账号、同操作的在途查询，查询结束后不保留缓存。控制接口明确限流时，只读查询最多尝试三次，依次退避一秒、两秒；权限故障不重试。等待仍计入发起调用的工作流期限，不重新生成答案。
+
 Automation决策缺少必填字段时，仅在使用宿主明确的响应指令及公开工具schema的情况下判模型格式错误。通用JSON路径错误仍是绑定失败；`coalesce`保留可选默认值，包括`api_search.top_k = 5`。
 
 Python响应含多个代码块时，抽取器保留首个入口函数实现块及辅助声明块。只有签名、没有函数体的说明块在后面有实现时跳过；真正有语法错误的实现仍保留，不换成后面的另一解法。抽取器通过只检查语法的Python AST解析排除单独的REPL记录、说明、测试与用法片段，不执行模型代码，也不按私有测试结果选块。解析使用`DITTO_PROVIDER_PYTHON`（默认`python`），保留import、常量与helper定义。

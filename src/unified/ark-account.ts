@@ -1,8 +1,32 @@
 import { createHash, createHmac } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+
+const inFlight = new Map<string, Promise<Record<string, unknown>>>();
+class AccountQueryError extends Error {
+  constructor(readonly status: number, readonly serviceCode: unknown, message: string) { super(message); }
+}
 
 /** Read-only control-plane queries. Keys and signed headers never leave this function's request. */
 export async function accountQuery(action: 'GetPersonalPlan' | 'GetAFPUsage', accountSuffix = ''): Promise<Record<string, unknown>> {
   if (accountSuffix && !/^[A-Z][A-Z0-9_]{0,31}$/.test(accountSuffix)) throw Error('Unknown configured account alias');
+  const key = `${accountSuffix}:${action}`;
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+  const query = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await queryOnce(action, accountSuffix); }
+      catch (error) {
+        if (!(error instanceof AccountQueryError) || attempt >= 2 ||
+          !(error.status === 429 || error.serviceCode === 'AccountFlowLimitExceeded')) throw error;
+        await delay(1000 * (attempt + 1));
+      }
+    }
+  })().finally(() => inFlight.delete(key));
+  inFlight.set(key, query);
+  return query;
+}
+
+async function queryOnce(action: 'GetPersonalPlan' | 'GetAFPUsage', accountSuffix: string): Promise<Record<string, unknown>> {
   const suffix = accountSuffix ? `_${accountSuffix}` : '';
   const ak = process.env[`ARK_AUDIT_ACCESS_KEY_ID${suffix}`];
   const sk = process.env[`ARK_AUDIT_SECRET_ACCESS_KEY${suffix}`];
@@ -26,7 +50,9 @@ export async function accountQuery(action: 'GetPersonalPlan' | 'GetAFPUsage', ac
       Authorization: `HMAC-SHA256 Credential=${ak}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}` } });
   const payload = await response.json() as Record<string, unknown>;
   if (!response.ok || (payload.ResponseMetadata as { Error?: unknown } | undefined)?.Error) {
-    throw Error(`Agent Plan ${action} failed: ${JSON.stringify((payload.ResponseMetadata as { Error?: unknown } | undefined)?.Error ?? { status: response.status })}`);
+    const error = (payload.ResponseMetadata as { Error?: { Code?: unknown } } | undefined)?.Error;
+    throw new AccountQueryError(response.status, error?.Code,
+      `Agent Plan ${action} failed: ${JSON.stringify(error ?? { status: response.status })}`);
   }
   return payload.Result as Record<string, unknown>;
 }
