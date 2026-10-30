@@ -205,10 +205,16 @@ function compactDiagnostics(stdout: string, stderr: string, passed: boolean): st
 }
 
 export function extractPythonCandidate(modelOutput: string, publicPrompt: string, entryPoint: string): string {
-  const fences = [...modelOutput.matchAll(/```(?:python|py)?\s*\r?\n([\s\S]*?)```/gi)].map((match) => match[1]!.trim());
+  const fences = [...modelOutput.matchAll(/```(?:python|py)?[^\S\r\n]*\r?\n([\s\S]*?)```/gi)].map((match) => match[1]!.trimEnd());
   const fencedWithEntry = fences.find((candidate) => containsEntryPoint(candidate, entryPoint));
-  const extracted = fencedWithEntry ?? fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
-  if (containsEntryPoint(extracted, entryPoint)) return extracted;
+  const extracted = fencedWithEntry ? fences.join("\n\n") : fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
+  if (containsEntryPoint(extracted, entryPoint)) {
+    // Public imports and helpers precede HumanEval's incomplete entry point.
+    const escaped = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const signature = new RegExp(`^(?:async\\s+)?def\\s+${escaped}\\s*\\(`, "m").exec(publicPrompt);
+    const preamble = signature ? publicPrompt.slice(0, signature.index).trimEnd() : "";
+    return preamble && !extracted.startsWith(preamble) ? `${preamble}\n\n${extracted}` : extracted;
+  }
   const lines = extracted.split(/\r?\n/);
   const indents = lines.filter((line) => line.trim()).map((line) => line.match(/^\s*/)![0].length);
   const commonIndent = indents.length ? Math.min(...indents) : 0;
@@ -217,12 +223,12 @@ export function extractPythonCandidate(modelOutput: string, publicPrompt: string
 }
 
 function stripPlainLanguagePrefix(output: string): string {
-  const lines = output.trim().split(/\r?\n/);
+  const lines = output.replace(/^\s*\r?\n/, "").trimEnd().split(/\r?\n/);
   const firstCodeLine = lines.findIndex((line) => /^\s*(?:@|from\s+\S+\s+import\s+|import\s+|(?:async\s+)?def\s+|class\s+)/.test(line));
-  return (firstCodeLine < 0 ? lines : lines.slice(firstCodeLine)).join("\n").trim();
+  return (firstCodeLine < 0 ? lines : lines.slice(firstCodeLine)).join("\n").trimEnd();
 }
 
 function containsEntryPoint(source: string, entryPoint: string): boolean {
   const escaped = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:async\\s+)?def\\s+${escaped}\\s*\\(`).test(source);
+  return new RegExp(`^[ \\t]*(?:async\\s+)?def\\s+${escaped}\\s*\\(`, "m").test(source);
 }
