@@ -45,7 +45,8 @@ function keys(v:any,allowed:readonly string[],path='$'):void{object(v,path);for(
 function atDefinitionPath<T>(path:string,run:()=>T):T{
  try{return run();}catch(error){
   if(error instanceof DefinitionError){if(error.path!=='$')throw error;throw new DefinitionError(error.detail,path,error.repairHint);}
-  throw new DefinitionError(error instanceof Error?error.message:String(error),path);
+  const message=error instanceof Error?error.message:String(error);
+  throw new DefinitionError(message,path,/Unavailable host capability: (?:Function|eval)\b/.test(message)?'Remove Function/eval and dynamic code construction. Use registered bounded_arithmetic through ACT.TOOL for arithmetic, or implement explicit bounded pure operations; do not re-submit the same forbidden tool source.':undefined);
  }
 }
 function id(v:any):void{check(typeof v==='string'&&/^[a-z][a-z0-9-]{0,63}$/.test(v)&&!['constructor','prototype','__proto__'].includes(v),'Invalid graph/node ID');}

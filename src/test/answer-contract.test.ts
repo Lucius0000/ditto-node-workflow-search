@@ -49,6 +49,9 @@ test('malformed tool and node declarations identify exact field and actionable r
  assert.throws(()=>validateDefinition(d),(error:unknown)=>{assert(error instanceof DefinitionError);assert.equal(error.issue.path,'graphs[0].nodes[1].config.evidence');assert.match(error.issue.repairHint,/array/);return true;});
  d.graphs[0]!.nodes[1]!.config=null as any;
  assert.throws(()=>validateDefinition(d),/graphs\[0\].nodes\[1\].config: Expected JSON object; received null/);
+ const unsafe=structuredClone(BASELINE_DEFINITION);
+ unsafe.tools=[{name:'unsafe_math',description:'Evaluate supplied expression',inputSchema:{type:'object',properties:{raw:{type:'string'}},required:['raw']},executeSource:'function(args){return Function("return ("+args.raw+")")();}'}];
+ assert.throws(()=>validateDefinition(unsafe),(error:unknown)=>{assert(error instanceof DefinitionError);assert.equal(error.issue.path,'tools[0].executeSource');assert.match(error.issue.repairHint,/Remove Function\/eval/);assert.match(error.issue.repairHint,/bounded_arithmetic/);return true;});
 });
 
 test('a rejected tool receives exact schema diagnostics in the next optimizer repair request',async()=>{

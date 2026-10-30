@@ -27,6 +27,9 @@ missing object, and explains that actual argument names and types must be declar
 These issues are retained in the rejected attempt and the next same-round repair
 request. Node/binding errors identify the affected node, field or native reference.
 Private scorer diagnostics and reference answers do not enter optimizer feedback.
+Forbidden `Function`/`eval` failures identify `tools[i].executeSource` and suggest
+the registered arithmetic tool or explicit bounded operations instead of resubmitting
+dynamic code.
 
 Quality feedback uses `parentOutcome` for a previous candidate's prediction;
 it does not call it a reference answer. A low F1 is an observation, not proof of
@@ -46,7 +49,23 @@ a separate real-LLM tool-schema repair check. An optional `--previous-run DIR`
 replays the old winning definition on six known diagnostic questions under the
 new user contract. Those targeted results do not select candidates. Reusing this
 known panel is a regression check, not a new blind holdout or formal Test result.
+If the search budget is exhausted, preserve the pending candidate and confirm only
+the best completely measured candidate. Partial scores never become parent/selection
+evidence. An interrupted retained run can finish that separate confirmation phase
+with `--continue-confirmation yes`; its search budget is not increased or resumed.
+
+An independent audit can be rerun without credentials or model calls:
+
+```powershell
+npm run audit:drop:contract -- RUN_DIRECTORY PATH_TO_PINNED_DATA
+```
+
+The audit includes completed search/confirmation results and labels partial
+checkpoint results separately. It checks every complete candidate was indexed,
+recomputes scores and replays saved model replies through the current adapter.
 
 Supply credentials via the ignored `.env` or process environment. On Windows,
 local HTTP transport tests may require `NO_PROXY=127.0.0.1,localhost` if a system
 proxy intercepts loopback traffic; this is test environment setup, not a model call.
+
+Measured results and remaining failures: [2026-10-30 validation](drop-answer-contract-validation-20261030.zh-CN.md).

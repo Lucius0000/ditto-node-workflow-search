@@ -25,7 +25,8 @@
     "experiment:legacy:a": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/coding/drop-small.js --method a",
     "experiment:legacy:small": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/coding/drop-small.js --method b",
     "audit:prompts": "npm run build && node --experimental-vm-modules scripts/audit_unified_prompts.mjs",
-    "validate:drop:contract": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env scripts/drop_answer_contract_smoke.mjs"
+    "validate:drop:contract": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env scripts/drop_answer_contract_smoke.mjs",
+    "audit:drop:contract": "npm run build && node --experimental-vm-modules scripts/audit_drop_answer_contract.mjs"
   },
   "dependencies": {
     "@codesoul-co/ditto": "0.1.1",
