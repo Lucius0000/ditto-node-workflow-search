@@ -71,7 +71,7 @@ test('a rejected tool receives exact schema diagnostics in the next optimizer re
   assert.doesNotMatch(input.request,/PRIVATE-GOLD/);
   return{proposal:{status:'success',output:{message:{content:JSON.stringify({rationale:'Add a connected public text helper.',definition:candidate})}}}};
  }} as Pick<DittoRuntime,'run'>;
- const result=await searchUnifiedWorkflows({runtime,model:{provider:'mock',model:'fixture'},dataset:'drop',publicTasks:[task],expectedRepeats:1,maxValidEvaluations:2,maxDesignRounds:1,maxProposalAttempts:2,evaluate:async()=>summary()});
+ const result=await searchUnifiedWorkflows({runtime,exploration:false,model:{provider:'mock',model:'fixture'},dataset:'drop',publicTasks:[task],expectedRepeats:1,maxValidEvaluations:2,maxDesignRounds:1,maxProposalAttempts:2,evaluate:async()=>summary()});
  assert.equal(calls,2);assert.deepEqual(result.state.history.map(x=>x.status),['valid','invalid-proposal','valid']);assert.equal(result.state.validEvaluations,2);
 });
 

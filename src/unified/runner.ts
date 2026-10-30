@@ -19,6 +19,8 @@ import {UNIFIED_SYSTEM_PROMPT,UNIFIED_SYSTEM_PROMPT_SHA256} from './prompts.js';
 import {createProviderBudget,type ProviderBudgetSnapshot} from './provider-budget.js';
 import {UnifiedRunStore,artifactHash} from './store.js';
 import {evaluateUnifiedCandidate} from './evaluation.js';
+import {createDirectionBudget,type BudgetDirection} from './direction-budget.js';
+import {MULTI_WORKER_POLICY,type ExplorationDirection} from './exploration.js';
 
 export const UNIFIED_FORMAL_PROTOCOL='ditto-declarative-staged-main-splits-v1';
 export interface UnifiedCLIOptions{
@@ -72,7 +74,7 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
   ...(options.dataset==='humaneval'||options.dataset==='mbpp'?{codeJudge:new DockerPythonJudge({image:options.dockerImage})}:{})});
  if(!benchmark.identity?.verified||benchmark.tasks.length!==fixedSplitLock(options.dataset,benchmark.split).count)throw Error('Unified formal evaluation requires the complete pinned split');
  const repeats=options.command==='search'?5:3;
- const identity={protocol:UNIFIED_FORMAL_PROTOCOL,executionIdentity,promptHash:UNIFIED_SYSTEM_PROMPT_SHA256,nodeSystemHash:NODE_SYSTEM_PROMPT_SHA256,initialDefinitionHash:options.command==='search'?artifactHash(initialDefinition):null,model:settings.model,endpoint:settings.baseUrl,generation:GENERATION,
+ const identity={protocol:UNIFIED_FORMAL_PROTOCOL,explorationPolicy:MULTI_WORKER_POLICY,executionIdentity,promptHash:UNIFIED_SYSTEM_PROMPT_SHA256,nodeSystemHash:NODE_SYSTEM_PROMPT_SHA256,initialDefinitionHash:options.command==='search'?artifactHash(initialDefinition):null,model:settings.model,endpoint:settings.baseUrl,generation:GENERATION,
   dataset:options.dataset,split:benchmark.split,data:benchmark.identity,taskIds:benchmark.tasks.map(task=>task.id),repeats,timeBudget,
   maxValidEvaluations:options.maxValidEvaluations,maxDesignRounds:options.maxDesignRounds,maxProposalAttempts:options.maxProposalAttempts,seed:options.seed,
   concurrency:options.concurrency,maxCalls:options.maxCalls,maxTokens:options.maxTokens,dockerImage:options.dockerImage};
@@ -95,25 +97,29 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
   await store.write('provider-budget.json',event.usage);await store.append('provider-usage.jsonl',event);
  }});
  const requestIds=new WeakMap<object,string>();
+ let activeDirection:BudgetDirection='baseline';
+ const oldDirections=options.resume?await store.optional<ReturnType<ReturnType<typeof createDirectionBudget>['snapshot']>>('provider-direction-budgets.json'):undefined;
+ const directionBudget=options.command==='search'?createDirectionBudget({maxCalls:options.maxCalls,maxTokens:options.maxTokens,...(oldDirections?{restored:oldDirections}:{}),onChange:value=>store.write('provider-direction-budgets.json',value)}):undefined;
  const responseModels=new Set<string>();
  const experiment=createExperimentRuntime(settings,{timeBudget,connectTimeoutMs:5000,
   beforeProviderCall:async input=>{
-   await budget.beforeProviderCall(input);const requestId=randomUUID();requestIds.set(input,requestId);
+   await directionBudget?.beforeProviderCall(input,activeDirection);await budget.beforeProviderCall(input);const requestId=randomUUID();requestIds.set(input,requestId);
    await store.append('provider-requests.jsonl',{requestId,at:new Date().toISOString(),input,
     systemHashes:input.messages.filter(message=>message.role==='system').map(message=>createHash('sha256').update(typeof message.content==='string'?message.content:JSON.stringify(message.content)).digest('hex'))});
   },afterProviderCall:async event=>{
    await budget.afterProviderCall(event);
+   await directionBudget?.afterProviderCall(event);
    for(const diagnostic of event.diagnostics){const model=(diagnostic as unknown as {responseModel?:unknown}).responseModel;if(typeof model==='string')responseModels.add(model);}
    await store.append('provider-responses.jsonl',{requestId:requestIds.get(event.input),at:new Date().toISOString(),inputMetadata:event.input.metadata,output:event.output,
     error:event.error instanceof Error?{name:event.error.name,message:event.error.message,code:(event.error as {code?:unknown}).code}:event.error,diagnostics:event.diagnostics});
    await store.write('model-observations.json',{requestedModel:settings.model,responseModels:[...responseModels],note:'API response fields may still be aliases; absent version is unknown'});
   },
   reflectionEvent:async event=>store.append('reflection-events.jsonl',event)});
- const emit=async(event:Readonly<Record<string,unknown>>)=>{await store.append('events.jsonl',{at:new Date().toISOString(),...event});
+ const emit=async(event:Readonly<Record<string,unknown>>)=>{if(event.type==='unified-parent-selected'&&event.explorationDirection)activeDirection=event.explorationDirection as ExplorationDirection;await store.append('events.jsonl',{at:new Date().toISOString(),...event});
   if(['case-completed','stage-completed','unified-search-completed','quality-pruned'].includes(String(event.type)))console.log(JSON.stringify(event));};
- const evaluate=(definition:GraphDefinition,id:string,reference?:UnifiedCandidate)=>evaluateUnifiedCandidate({benchmark,definition,id,store,
+ const evaluate=(definition:GraphDefinition,id:string,reference?:UnifiedCandidate,context?:{direction?:ExplorationDirection})=>{activeDirection=context?.direction??'baseline';return evaluateUnifiedCandidate({benchmark,definition,id,store,
   executionIdentity:{...identity,artifactHash:artifactHash(definition)},repeats,concurrency:options.concurrency,retryAttempts:5,timeBudget,prune:options.command==='search',resume:options.resume,
-  ...(reference?{reference}:{}),runTask:(spec,task)=>runGraphAgent(spec,task,experiment,settings),onEvent:emit});
+  ...(reference?{reference}:{}),runTask:(spec,task)=>runGraphAgent(spec,task,experiment,settings),onEvent:emit});};
  try{
   manifest.status=options.command==='search'?'searching':'testing';await store.write('manifest.json',manifest);
   if(options.command==='test'){

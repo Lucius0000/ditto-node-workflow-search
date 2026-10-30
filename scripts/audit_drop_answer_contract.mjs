@@ -7,6 +7,7 @@ import {createExperimentRuntime} from '../dist/ditto/runtime.js';
 import {runGraphAgent} from '../dist/graph-agent/executor.js';
 import {UNIFIED_SYSTEM_PROMPT} from '../dist/unified/prompts.js';
 import {NODE_SYSTEM_PROMPT} from '../dist/graph-agent/system.js';
+import {executedDirectionNodes} from '../dist/unified/exploration.js';
 
 /** Audit every saved complete/partial scope; this function never invokes a network provider. */
 export async function auditDropAnswerRun(directory,datasetDirectory){
@@ -14,7 +15,8 @@ const root=resolve(directory),dataDir=resolve(datasetDirectory),store=new Unifie
 const full=await loadBenchmark('drop',{dataDir,split:'validate',dataMode:'formal',limit:0});
 const settings={baseUrl:'https://example.invalid',apiKey:'offline',model:manifest.model,concurrency:1,timeoutMs:3000};
 const raw=(await readFile(join(dataDir,'drop_validate.jsonl'),'utf8')).split(/\r?\n/).filter(Boolean).map(JSON.parse),gold=new Map(raw.map(r=>['drop:'+r.id,r.ref_text]));
-const tasks=new Map(full.tasks.map(t=>[t.id,t])),audit={executions:0,scoreMismatches:[],replayMismatches:[],modelFailures:[],engineeringFailures:[],losses:[],workflows:[],optimizerSystemsFrozen:true,sampleSystemsFrozen:true};
+const tasks=new Map(full.tasks.map(t=>[t.id,t])),audit={executions:0,scoreMismatches:[],replayMismatches:[],modelFailures:[],engineeringFailures:[],losses:[],workflows:[],evidenceLabelsMissing:[],directionCoverageViolations:[],optimizerSystemsFrozen:true,sampleSystemsFrozen:true};
+const searchState=await store.optional('search-state.json');
 const requests=await store.lines('provider-requests.jsonl');
 for(const r of requests){if(['optimizer','tool-contract-repair-check'].includes(r.input.metadata?.role)&&r.input.messages[0].content!==UNIFIED_SYSTEM_PROMPT)audit.optimizerSystemsFrozen=false;}
 for(const area of ['search','discovery','confirmation','regression']){
@@ -27,17 +29,23 @@ for(const area of ['search','discovery','confirmation','regression']){
    partial=true;const valid=checkpoint.cases.filter(r=>r.valid===true&&!r.error);
    for(const r of checkpoint.cases.filter(r=>r.valid!==true||r.error)){
     const value={area,id:entry.name,caseId:r.caseId,error:r.error};
-    if(String(r.error).includes('SEARCH_BUDGET_EXHAUSTED'))(audit.resourceStoppedCases??=[]).push(value);else audit.engineeringFailures.push(value);
+    if(/SEARCH_(?:DIRECTION_)?BUDGET/.test(String(r.error)))(audit.resourceStoppedCases??=[]).push(value);else audit.engineeringFailures.push(value);
    }
    if(!valid.length)continue;
    summary={results:valid,score:valid.reduce((s,r)=>s+r.score,0)/valid.length,totalTokens:valid.reduce((s,r)=>s+(r.totalTokens??0),0),repeatScores:[]};
   }
   const {definition}=await store.read(`${area}/candidates/${entry.name}.json`);
-  audit.workflows.push({area,id:entry.name,measurement:partial?'partial, not eligible for selection':'complete',observedRuns:summary.results.length,score:summary.score,tokens:summary.totalTokens,repeatScores:summary.repeatScores,nodes:definition.graphs.flatMap(g=>g.nodes.map(n=>({graph:g.id,id:n.id,type:n.type,dependencies:n.dependencies,instruction:n.config.instruction}))),definition});
+  const attempt=searchState?.history.find(h=>h.id===entry.name)??(searchState?.pending?.id===entry.name?searchState.pending:undefined);
+  const workflow={area,id:entry.name,direction:attempt?.explorationDirection,measurement:partial||summary.qualityPruned?'partial, not eligible for selection':'complete',observedRuns:summary.results.length,score:summary.score,tokens:summary.totalTokens,repeatScores:summary.repeatScores,nodes:definition.graphs.flatMap(g=>g.nodes.map(n=>({graph:g.id,id:n.id,type:n.type,dependencies:n.dependencies,instruction:n.config.instruction}))),definition};
+  audit.workflows.push(workflow);const executed=new Set();
   const cache=new Map();
   for(const row of summary.results){
    const tid=row.caseId.replace(/#\d+$/,''),repeat=Number(row.caseId.split('#').at(-1));if(!cache.has(tid))cache.set(tid,(await readFile(join(path,'executions',caseFile(tid)+'.jsonl'),'utf8')).split(/\r?\n/).filter(Boolean).map(JSON.parse));
    const execution=cache.get(tid)[repeat-1];audit.executions++;
+   for(const id of execution.executedNodeIds??Object.keys(execution.rawNodeOutputs??{}))executed.add(id);
+   if(manifest.evidencePresentation)for(const n of definition.graphs.flatMap(g=>g.nodes))if(n.type==='INFER.REASONING.SAMPLE'&&n.config.evidence?.length&&execution.nodeInputs?.[n.id]){
+    const messages=JSON.stringify(execution.nodeInputs[n.id].messages);if(!messages.includes('[Evidence 1]')||!messages.includes('Source:'))audit.evidenceLabelsMissing.push({area,id:entry.name,caseId:row.caseId,nodeId:n.id});
+   }
    const score=scoreDropAnswer(gold.get(tid),row.prediction).score;if(Math.abs(score-row.score)>1e-12)audit.scoreMismatches.push({area,id:entry.name,caseId:row.caseId});
    if(execution.modelFailure)audit.modelFailures.push({area,id:entry.name,caseId:row.caseId,failure:execution.modelFailure});
    if(!row.valid||execution.candidateFailure)audit.engineeringFailures.push({area,id:entry.name,caseId:row.caseId});
@@ -49,6 +57,10 @@ for(const area of ['search','discovery','confirmation','regression']){
    try{const output=await runGraphAgent(definition,tasks.get(tid),replay,{...settings,apiKey:'offline'});if(output.answer!==row.prediction)audit.replayMismatches.push({area,id:entry.name,caseId:row.caseId,saved:row.prediction,replayed:output.answer});}
    catch(e){audit.replayMismatches.push({area,id:entry.name,caseId:row.caseId,error:e.message});}finally{await replay.close();}
   }
+  workflow.executedNodeIds=[...executed];workflow.executedNodeTypes=[...new Set(workflow.nodes.filter(n=>executed.has(n.id)).map(n=>n.type))].sort();
+  if(attempt?.status==='valid'&&attempt.explorationDirection&&!executedDirectionNodes(definition,attempt.explorationDirection,[{executedNodeIds:[...executed]}]).length){
+   if(audit.modelFailures.some(r=>r.area===area&&r.id===entry.name))(audit.directionsBlockedByModelOutput??=[]).push(entry.name);else audit.directionCoverageViolations.push(entry.name);
+  }
  }
 }
 const history=await store.optional('search-state.json');
@@ -56,17 +68,18 @@ audit.missingCompleteCandidates=(history?.history??[]).filter(h=>h.status==='val
 await store.write('AUDIT.json',audit);await store.write('ALL-LOSSES.json',audit.losses);
 const pct=x=>(100*x).toFixed(2)+'%',escape=s=>String(s).replaceAll('|','\\|').replaceAll('\n',' ');
 const report=['# DROP答案协议修复：小批量验证','',`状态：${manifest.status}。固定system未改，主F1评分器与数据划分未改；user答案契约版本${manifest.publicAnswerContract.version}。`,
- '','探索24题×1、确认12题×2，固定seed=20261029；沿用已知诊断面板，不是新盲测或正式Test。另有独立工具修复检查和旧胜出图的6题定向回归，均不参与选优。',
+ '','探索24题×1、确认12题×2，固定seed=20261029；沿用已知诊断面板，不是新盲测或正式Test。另有独立工具修复检查和旧胜出图定向回归，均不参与选优。',
  '',`完整执行审计${audit.executions}次：重算差异${audit.scoreMismatches.length}、离线重放差异${audit.replayMismatches.length}、执行工程失败${audit.engineeringFailures.length}、模型协议失败${audit.modelFailures.length}。`,
  '',`优化器system冻结：${audit.optimizerSystemsFrozen}；SAMPLE system冻结：${audit.sampleSystemsFrozen}。`,
  '',...(manifest.searchStopReason?[`搜索停止：${manifest.searchStopReason}。部分候选的分数仅为已完成题次均值，没有候选资格；预算阻断的题次不作为质量零分。`,'']:[]),
- '','## 工作流与F1','', '| 阶段 | ID / 完整性 | 实际节点 | F1 | tokens |','|---|---|---|---:|---:|',...audit.workflows.map(w=>`| ${w.area} | ${w.id} / ${w.measurement} (${w.observedRuns}题次) | ${w.nodes.map(n=>n.id+':'+n.type).join(' → ')} | ${pct(w.score)} | ${w.tokens} |`),
+ '',`证据来源标签缺失${audit.evidenceLabelsMissing.length}，已接受候选方向覆盖违规${audit.directionCoverageViolations.length}。`,
+ '','## 工作流与F1','', '| 阶段/方向 | ID / 完整性 | 实际执行操作 | F1 | tokens |','|---|---|---|---:|---:|',...audit.workflows.map(w=>`| ${w.area}/${w.direction??'-'} | ${w.id} / ${w.measurement} (${w.observedRuns}题次) | ${w.executedNodeTypes.join(', ')} | ${pct(w.score)} | ${w.tokens} |`),
  '','## 全部非满分题次','', '| 阶段/候选 | 题次 | 原问题 | 实际输出 | 参考 | F1 |','|---|---|---|---|---|---:|',...audit.losses.map(r=>`| ${r.area}/${r.candidate} | ${r.caseId} | ${escape(r.question)} | ${escape(r.prediction)} | ${escape(r.reference)} | ${pct(r.score)} |`),
  '','完整声明、逐节点原始模型输出与所有失分题次见AUDIT.json、ALL-LOSSES.json和各evaluations/executions记录。固定主评分不做数值等价判断，.5/0.5等差异仍可能扣分；不通过修改评分器抬分。'];
 const comparison=await store.optional('comparison.json');if(comparison)report.splice(4,0,`确认F1：${pct(comparison.baselineF1)} → ${pct(comparison.selectedF1)}，差值${(100*comparison.delta).toFixed(2)}个百分点；tokens ${comparison.baselineTokens} → ${comparison.selectedTokens}。`,'');
-await store.write('validation-summary.json',{status:manifest.status,comparison,toolRepair:await store.optional('tool-repair/result.json'),searchStopReason:manifest.searchStopReason,executions:audit.executions,scoreMismatches:audit.scoreMismatches,replayMismatches:audit.replayMismatches,missingCompleteCandidates:audit.missingCompleteCandidates,resourceStoppedCases:audit.resourceStoppedCases??[],modelFailures:audit.modelFailures,engineeringFailures:audit.engineeringFailures,optimizerSystemsFrozen:audit.optimizerSystemsFrozen,sampleSystemsFrozen:audit.sampleSystemsFrozen,usage:manifest.usage});
+await store.write('validation-summary.json',{status:manifest.status,comparison,toolRepair:await store.optional('tool-repair/result.json'),searchStopReason:manifest.searchStopReason,executions:audit.executions,scoreMismatches:audit.scoreMismatches,replayMismatches:audit.replayMismatches,missingCompleteCandidates:audit.missingCompleteCandidates,resourceStoppedCases:audit.resourceStoppedCases??[],modelFailures:audit.modelFailures,engineeringFailures:audit.engineeringFailures,evidenceLabelsMissing:audit.evidenceLabelsMissing,directionCoverageViolations:audit.directionCoverageViolations,optimizerSystemsFrozen:audit.optimizerSystemsFrozen,sampleSystemsFrozen:audit.sampleSystemsFrozen,usage:manifest.usage});
 await writeFile(join(root,'REPORT.zh-CN.md'),report.join('\n')+'\n','utf8');
-if(audit.scoreMismatches.length||audit.replayMismatches.length||audit.missingCompleteCandidates.length||!audit.optimizerSystemsFrozen||!audit.sampleSystemsFrozen)process.exitCode=1;
+if(audit.scoreMismatches.length||audit.replayMismatches.length||audit.missingCompleteCandidates.length||audit.evidenceLabelsMissing.length||audit.directionCoverageViolations.length||!audit.optimizerSystemsFrozen||!audit.sampleSystemsFrozen)process.exitCode=1;
 console.log(JSON.stringify({audit:'completed',executions:audit.executions,scoreMismatches:audit.scoreMismatches.length,replayMismatches:audit.replayMismatches.length,comparison}));
 
 return audit;

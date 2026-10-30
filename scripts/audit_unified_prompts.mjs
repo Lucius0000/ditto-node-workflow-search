@@ -20,7 +20,7 @@ const experiment=createExperimentRuntime(settings,{provider:{async invoke(input)
 try{
  for(const dataset of ['drop','gsm8k']){
   const task={id:'audit-'+dataset,dataset,prompt:'A public offline task.',outputInstruction:'Return the answer.',metadata:{}};
-  await searchUnifiedWorkflows({runtime:experiment.runtime,model:{provider:experiment.providerName,model:experiment.model},dataset,publicTasks:[task],
+  await searchUnifiedWorkflows({runtime:experiment.runtime,exploration:false,model:{provider:experiment.providerName,model:experiment.model},dataset,publicTasks:[task],
    expectedRepeats:1,maxValidEvaluations:2,maxDesignRounds:1,evaluate:async definition=>{
     const result=await runGraphAgent(definition,task,experiment,settings);
     assert.equal(result.answer,'public answer');

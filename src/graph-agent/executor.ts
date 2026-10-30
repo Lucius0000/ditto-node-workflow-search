@@ -18,6 +18,7 @@ import {validateDefinition,topologicalNodes,type GraphDefinition,type Definition
 import {evaluateBinding,readBindingPath,BindingContractError,ModelOutputFormatError,type BindingEnvironment} from './bindings.js';
 import {createTaskRetrieval} from './retrieval.js';
 import {NODE_SYSTEM_PROMPT,NODE_SYSTEM_VERSION} from './system.js';
+import {evidenceSources,presentEvidence} from './evidence.js';
 
 export class AgentContractError extends Error {
  readonly code='B_AGENT_CONTRACT';readonly failureKind='execution';readonly publicMessage:string;
@@ -126,10 +127,11 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
  };
  const bind=(node:DefinitionNode,available:Record<string,any>,previous:Record<string,any>,snapshot:Record<string,any>):any=>{
   const c=node.config,get=(s:any)=>resolve(s,available,previous,snapshot),metadata={experiment:GRAPH_AGENT_POLICY,nodeType:node.type,nodeId:node.id,taskId:task.id,dataset:task.dataset,systemVersion:NODE_SYSTEM_VERSION};
-  const evidence=()=> (c.evidence??[]).map((s:Source)=>asText(get(s))).join('\n\n');
+  const evidence=()=>presentEvidence(c.evidence??[],(c.evidence??[]).map((s:Source)=>get(s)),definition.graphs);
+  const artifactSources=()=>JSON.stringify({target:c.target?evidenceSources(c.target,definition.graphs):undefined,candidates:c.candidates?.map((s:Source,i:number)=>({id:`candidate-${i}`,sources:evidenceSources(s,definition.graphs)})),user:c.user?evidenceSources(c.user,definition.graphs):undefined});
   const extra=()=>c.user===undefined?'':asText(get(c.user));
   const format=()=>c.outputFormat==='json'?'\n\nDeclared node output format: return strict JSON only.':'';
-  const userMessages=()=>[{role:'user' as const,content:`Original task:\n${task.prompt}\n\nNode instruction:\n${c.instruction??''}\n\nAdditional user material:\n${extra()}\n\nTask output requirements:\n${taskOutputRequirements(task)}${format()}`}];
+  const userMessages=()=>[{role:'user' as const,content:`Original task:\n${task.prompt}\n\nNode instruction:\n${c.instruction??''}\n\nArtifact provenance (identity, not proof of correctness):\n${artifactSources()}\n\nAdditional user material:\n${extra()}\n\nTask output requirements:\n${taskOutputRequirements(task)}${format()}`}];
   switch(node.type){
    case'CONTEXT.LOAD':return{sources:c.sources.map((s:Source,i:number)=>({id:`${node.id}-source-${i}`,content:get(s)}))};
    case'CONTEXT.SELECT':return{context:get(c.context),purpose:'infer',strategy:{kind:'default'},...(c.query!==undefined?{query:asText(get(c.query))}:{}),...(c.limit?{limit:c.limit}:{}),...(c.maxTokens?{maxTokens:c.maxTokens}:{})};

@@ -11,6 +11,8 @@ import {buildUnifiedFeedback,type FeedbackEvaluation} from './feedback.js';
 import {UNIFIED_DEFAULTS,UNIFIED_SEARCH_POLICY,comparableTokens} from './policy.js';
 import {UNIFIED_OPTIMIZER_SYSTEM,UNIFIED_OPTIMIZER_SYSTEM_SHA256,UNIFIED_PROMPT_VERSION} from './prompts.js';
 import {publicAnswerContract,taskOutputRequirements} from '../benchmark/answer-contract.js';
+import {EVIDENCE_PRESENTATION_VERSION} from '../graph-agent/evidence.js';
+import {MULTI_WORKER_POLICY,EXPLORATION_DIRECTIONS,directionForRound,explorationInstruction,validateExploration,executedDirectionNodes,type ExplorationDirection} from './exploration.js';
 
 export interface UnifiedEvaluation extends FeedbackEvaluation {}
 export interface UnifiedAttempt {
@@ -18,7 +20,8 @@ export interface UnifiedAttempt {
   readonly designRound:number;
   readonly proposalAttempt:number;
   readonly parentId:string|null;
-  readonly status:'valid'|'quality-pruned'|'invalid-proposal'|'invalid-evaluation'|'provider-error';
+  readonly status:'valid'|'quality-pruned'|'invalid-proposal'|'invalid-evaluation'|'provider-error'|'resource-stopped';
+  readonly explorationDirection?:ExplorationDirection;
   readonly definition?:GraphDefinition;
   readonly rationale?:string;
   readonly artifactHash?:string;
@@ -34,9 +37,11 @@ export interface UnifiedCandidate extends UnifiedAttempt {
 export interface UnifiedPending {
   readonly id:string; readonly designRound:number; readonly proposalAttempt:number; readonly parentId:string|null;
   readonly definition:GraphDefinition; readonly rationale:string; readonly artifactHash:string; readonly rawResponse?:string;
+  readonly explorationDirection?:ExplorationDirection;
 }
 export interface UnifiedSelection {
   readonly designRound:number; readonly parentId:string; readonly proposalAttempts:number;
+  readonly explorationDirection?:ExplorationDirection;
   readonly contractRepair?:{readonly rejectedAttemptId:string;readonly definition?:GraphDefinition;readonly rawResponse?:string;readonly errors:readonly string[];readonly issues?:readonly DefinitionIssue[]};
 }
 export interface UnifiedSearchState {
@@ -54,7 +59,9 @@ export interface UnifiedSearchOptions {
   readonly maxValidEvaluations?:number; readonly maxDesignRounds?:number; readonly maxProposalAttempts?:number;
   readonly seed?:number; readonly patience?:number; readonly identity?:string;
   readonly initialDefinition?:GraphDefinition;
-  readonly evaluate:(definition:GraphDefinition,id:string,reference?:UnifiedCandidate)=>Promise<UnifiedEvaluation>;
+  /** Explicit opt-out is for isolated protocol tests/legacy diagnostic comparisons. Main search enables protected directions. */
+  readonly exploration?:false;
+  readonly evaluate:(definition:GraphDefinition,id:string,reference?:UnifiedCandidate,context?:{direction?:ExplorationDirection})=>Promise<UnifiedEvaluation>;
   readonly resume?:UnifiedSearchState;
   readonly save?:(state:UnifiedSearchState)=>void|Promise<void>;
   readonly event?:(event:Readonly<Record<string,unknown>>)=>void|Promise<void>;
@@ -152,9 +159,11 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
     ||options.publicTasks.some(task=>task.dataset!==options.dataset)||options.expectedExamples!==undefined&&options.expectedExamples!==options.publicTasks.length)
     throw Error('Unified search requires the complete unique public task collection for its declared evaluation');
   const baseline=validateDefinition(options.initialDefinition??{...structuredClone(BASELINE_DEFINITION),version:2});
+  const explore=options.exploration!==false;
+  if(explore&&baseline.graphs.flatMap(g=>g.nodes).filter(n=>n.type==='INFER.REASONING.SAMPLE').length>1)throw Error('Protected multi-worker search requires a baseline with at most one SAMPLE');
   if((baseline as {version:number}).version!==2)throw Error('Unified baseline must use version:2');
   const configurationHash=digest({policy:UNIFIED_SEARCH_POLICY,system:UNIFIED_OPTIMIZER_SYSTEM_SHA256,identity:options.identity??null,dataset:options.dataset,
-    model:options.model,generation:GENERATION,answerContract:publicAnswerContract(options.dataset),taskIds:options.publicTasks.map(task=>task.id),repeats,maxValid,maxDesign,maxAttempts,patience,seed,baseline:unifiedArtifactHash(baseline)});
+    model:options.model,generation:GENERATION,answerContract:publicAnswerContract(options.dataset),evidencePresentation:EVIDENCE_PRESENTATION_VERSION,exploration:explore?MULTI_WORKER_POLICY:false,taskIds:options.publicTasks.map(task=>task.id),repeats,maxValid,maxDesign,maxAttempts,patience,seed,baseline:unifiedArtifactHash(baseline)});
   const random=new SeededRandom(seed);
   let state:UnifiedSearchState=options.resume?structuredClone(options.resume):{schemaVersion:1,policy:UNIFIED_SEARCH_POLICY,configurationHash,
     systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,validEvaluations:0,designRoundsCompleted:0,proposalAttempts:0,prunedEvaluations:0,engineeringFailures:0,
@@ -185,7 +194,8 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
       let evaluation:UnifiedEvaluation|undefined;
       try{
         const reference=bestUnifiedCandidate(state.history);
-        evaluation=await options.evaluate(pending.definition,pending.id,reference);
+        evaluation=await options.evaluate(pending.definition,pending.id,reference,pending.explorationDirection?{direction:pending.explorationDirection}:{});
+        if(pending.explorationDirection&&!executedDirectionNodes(pending.definition,pending.explorationDirection,evaluation.publicTraces??[]).length&&!(evaluation.publicTraces??[]).some(t=>(t as {modelFailure?:unknown}).modelFailure)){const error=new DefinitionError(`No operation from protected direction ${pending.explorationDirection} executed on the measured tasks`,'exploration.execution','Connect this worker to the actual visited route and consume its output; unused declarations do not satisfy the quota.');throw Object.assign(error,{publicMessage:error.message,publicIssue:error.issue});}
         if(evaluation.qualityPruned){
           if(pending.designRound===0||evaluation.valid!==true||evaluation.examples>=options.publicTasks.length)throw Error('A baseline/full or engineering-invalid evaluation cannot be quality-pruned');
           assertUnifiedComplete(evaluation,options.publicTasks.slice(0,evaluation.examples),repeats);
@@ -201,6 +211,11 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
         await save();await event({type:'unified-evaluation-completed',attempt,validEvaluations:state.validEvaluations});continue;
       }catch(error){
         if((error as {checkpointFailure?:boolean})?.checkpointFailure)throw error;
+        if((error as {code?:string})?.code==='SEARCH_DIRECTION_BUDGET'){
+          const attempt:UnifiedAttempt={...pending,status:'resource-stopped',publicErrors:['Protected direction budget exhausted; partial measurements remain in checkpoints and are not quality zeroes.']};
+          const{pending:_pending,selection:_selection,...rest}=state;state={...rest,history:[...state.history,attempt],designRoundsCompleted:pending.designRound};
+          await save();await event({type:'unified-direction-budget-stopped',attempt});continue;
+        }
         if(infrastructure(error)){await save();await event({type:'unified-evaluation-interrupted',id:pending.id,artifactHash:pending.artifactHash});throw error;}
         const publicError=evaluation?.engineeringIssues?.map(issue=>`${issue.code}: ${issue.message}`).join('\n')||publicContractError(error);
         const publicIssue=(error as {publicIssue?:DefinitionIssue}).publicIssue??{code:'B_EXECUTION_CONTRACT',path:'workflow',message:publicError,repairHint:'Repair the indicated public workflow interface; never change the benchmark or scorer.'};
@@ -217,12 +232,13 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
     }
     if(state.validEvaluations>=maxValid){stoppedBecause='valid-budget';break;}
     const complete=state.history.filter(isUnifiedCandidate);
-    if(!state.selection&&checkAFlowConvergence(complete.map(row=>row.evaluation),3,0,patience).converged){stoppedBecause='converged';break;}
+    if(!state.selection&&(!explore||state.designRoundsCompleted>=EXPLORATION_DIRECTIONS.length)&&checkAFlowConvergence(complete.map(row=>row.evaluation),3,0,patience).converged){stoppedBecause='converged';break;}
     if(!state.selection&&state.designRoundsCompleted>=maxDesign){stoppedBecause='design-budget';break;}
     if(!state.selection){
       const parent=selectUnifiedParent(state.history,random);
-      state={...state,selection:{designRound:state.designRoundsCompleted+1,parentId:parent.id,proposalAttempts:0},randomState:random.state};
-      await save();await event({type:'unified-parent-selected',designRound:state.selection!.designRound,parentId:parent.id,probabilities:unifiedParentProbabilities(state.history)});
+      const round=state.designRoundsCompleted+1;
+      state={...state,selection:{designRound:round,parentId:parent.id,proposalAttempts:0,...(explore?{explorationDirection:directionForRound(round)}:{})},randomState:random.state};
+      await save();await event({type:'unified-parent-selected',designRound:round,parentId:parent.id,explorationDirection:state.selection!.explorationDirection,probabilities:unifiedParentProbabilities(state.history)});
     }
     const selection=state.selection!;
     if(selection.proposalAttempts>=maxAttempts){
@@ -240,9 +256,10 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
         mutationLimits:{mainChange:1,auxiliary:'necessary connected predecessors/successors only',maxDeclaredNodes:24,maxExistingContentChanges:5,maxToolChanges:1,
           dependencyEdgeEdits:'max(12,4*N), N=max(parent,child nodes); reversal costs two'}},
       interfaceGuide:GRAPH_DEFINITION_GUIDE,
+      ...(selection.explorationDirection?{exploration:explorationInstruction(selection.explorationDirection)}:{}),
       authorizedRetrievalTargets:[{name:'task-public',scope:'only this task public input; never other tasks, labels, confirmation or Test'}],
       publicTaskExamples:options.publicTasks.slice(0,2).map(task=>({id:task.id,prompt:task.prompt,outputInstruction:taskOutputRequirements(task)})),
-      history:state.history.map(row=>({id:row.id,parentId:row.parentId,status:row.status,...(row.rationale?{rationale:row.rationale.slice(0,1000)}:{}),
+      history:state.history.map(row=>({id:row.id,parentId:row.parentId,status:row.status,explorationDirection:row.explorationDirection,...(row.rationale?{rationale:row.rationale.slice(0,1000)}:{}),
         ...(isUnifiedCandidate(row)?{score:row.evaluation.score,totalTokens:row.evaluation.totalTokens}:{}),...(row.status==='quality-pruned'?{stage:row.evaluation?.examples}:{}),})),
       measuredFeedback:buildUnifiedFeedback(state.history,options.publicTasks),
       ...(selection.contractRepair?{contractRepair:selection.contractRepair}:{}),});
@@ -259,19 +276,29 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
         for(const key of Object.keys(aggregate)as(keyof typeof aggregate)[])aggregate[key]+=usage[key];
         state={...state,optimizerUsage:aggregate};await save();
       }
-      if(sampled.status!=='success'||!sampled.output)throw Object.assign(Error('Optimizer provider did not return a complete proposal'),{infrastructureFailure:true});
+      if(sampled.status!=='success'||!sampled.output){
+        const detail=sampled.error?.message??'Optimizer provider did not return a complete proposal';
+        // Native NodeResult retains the message but can replace a thrown error code with EXECUTION_FAILED.
+        const code=detail.startsWith('SEARCH_DIRECTION_BUDGET:')?'SEARCH_DIRECTION_BUDGET':detail.startsWith('SEARCH_BUDGET_EXHAUSTED:')?'SEARCH_BUDGET_EXHAUSTED':undefined;
+        throw Object.assign(Error(detail),{infrastructureFailure:true,...(code?{code}:{})});
+      }
       rawResponse=typeof sampled.output.message.content==='string'?sampled.output.message.content:JSON.stringify(sampled.output.message.content);
       const parsed=parseUnifiedProposal(rawResponse);definition=parsed.definition;rationale=parsed.rationale;
       validateDefinitionChange(JSON.stringify(parent.definition),JSON.stringify(definition));
+      if(selection.explorationDirection)validateExploration(parent.definition,definition,selection.explorationDirection);
       const artifactHash=unifiedArtifactHash(definition);
       if(state.history.some(row=>row.artifactHash===artifactHash&&row.status!=='provider-error'))throw Error('Duplicate artifact; changing rationale or mutation metadata does not create a new workflow');
-      state={...state,pending:{id,designRound:selection.designRound,proposalAttempt,parentId:parent.id,definition,rationale,artifactHash,rawResponse}};
+      state={...state,pending:{id,designRound:selection.designRound,proposalAttempt,parentId:parent.id,definition,rationale,artifactHash,rawResponse,...(selection.explorationDirection?{explorationDirection:selection.explorationDirection}:{})}};
       await save();await event({type:'unified-candidate-proposed',pending:state.pending});
     }catch(error){
       if((error as {checkpointFailure?:boolean})?.checkpointFailure)throw error;
+      if((error as {code?:string})?.code==='SEARCH_DIRECTION_BUDGET'){
+        const attempt:UnifiedAttempt={id,designRound:selection.designRound,proposalAttempt,parentId:parent.id,status:'resource-stopped',...(selection.explorationDirection?{explorationDirection:selection.explorationDirection}:{}),publicErrors:['Protected proposal/evaluation direction quota exhausted; proceed to the next reserved direction.']};
+        const{selection:_selection,...rest}=state;state={...rest,history:[...state.history,attempt],designRoundsCompleted:selection.designRound};await save();await event({type:'unified-direction-budget-stopped',attempt});continue;
+      }
       const isInfrastructure=infrastructure(error),publicError=isInfrastructure?'Optimizer infrastructure interrupted the proposal; preserve its intended definition.':message(error).slice(0,1600);
       const publicIssue:DefinitionIssue=error instanceof DefinitionError?error.issue:{code:'B_PROPOSAL_CONTRACT',path:'proposal',message:publicError,repairHint:'Return a complete valid JSON proposal with the documented fields; use the specific error and retain the intended mechanism.'};
-      const attempt:UnifiedAttempt={id,designRound:selection.designRound,proposalAttempt,parentId:parent.id,status:isInfrastructure?'provider-error':'invalid-proposal',
+      const attempt:UnifiedAttempt={id,designRound:selection.designRound,proposalAttempt,parentId:parent.id,status:isInfrastructure?'provider-error':'invalid-proposal',...(selection.explorationDirection?{explorationDirection:selection.explorationDirection}:{}),
         ...(rawResponse!==undefined?{rawResponse}:{}),...(definition?{definition,artifactHash:unifiedArtifactHash(definition)}:{}),...(rationale?{rationale}:{}),publicErrors:[publicError],...(!isInfrastructure?{publicIssues:[publicIssue]}:{})};
       state={...state,history:[...state.history,attempt],engineeringFailures:state.engineeringFailures+(isInfrastructure?0:1),selection:{...state.selection!,
         ...(!isInfrastructure?{contractRepair:{rejectedAttemptId:id,...(definition?{definition}:{}),...(rawResponse!==undefined?{rawResponse}:{}),

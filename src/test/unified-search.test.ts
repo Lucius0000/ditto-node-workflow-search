@@ -4,11 +4,13 @@ import type {DittoRuntime} from '@codesoul-co/ditto/runtime';
 import type {BenchmarkTask,DatasetName,EvaluationSummary} from '../domain.js';
 import {BASELINE_DEFINITION,type GraphDefinition} from '../graph-agent/schema.js';
 import {createExperimentRuntime} from '../ditto/runtime.js';
-import {searchUnifiedWorkflows,unifiedParentProbabilities,assertUnifiedComplete,type UnifiedSearchState} from '../unified/search.js';
+import {searchUnifiedWorkflows as searchWithWorkerPolicy,unifiedParentProbabilities,assertUnifiedComplete,type UnifiedSearchState,type UnifiedSearchOptions} from '../unified/search.js';
 import {UNIFIED_SYSTEM_PROMPT,UNIFIED_SYSTEM_PROMPT_SHA256} from '../unified/prompts.js';
 import {createHash} from 'node:crypto';
 
 const model={provider:'mock',model:'fixture'};
+// These fixtures isolate checkpoint/scoring behavior; worker allocation has its own live-path tests.
+const searchUnifiedWorkflows=(options:UnifiedSearchOptions)=>searchWithWorkerPolicy({...options,exploration:false});
 const tasks=(count=1,dataset:DatasetName='drop'):BenchmarkTask[]=>Array.from({length:count},(_,index)=>({id:`case:${index}`,dataset,prompt:`Public ${dataset} problem ${index}`,outputInstruction:'Return the requested answer',metadata:{}}));
 function summary(score=.5,count=1,repeats=1,totalTokens=2):EvaluationSummary{
   const results=Array.from({length:count},(_,index)=>Array.from({length:repeats},(_,repeat)=>({caseId:`case:${index}#${repeat+1}`,valid:true,score,expected:'PRIVATE-GOLD',prediction:'public prediction',

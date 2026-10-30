@@ -22,6 +22,9 @@ import {withWorkflowTimeBudget} from '../dist/execution/time-budget.js';
 import {GENERATION} from '../dist/protocol.js';
 import {UNIFIED_SYSTEM_PROMPT,UNIFIED_SYSTEM_PROMPT_SHA256,UNIFIED_DEFINITION_GUIDE} from '../dist/unified/prompts.js';
 import {NODE_SYSTEM_PROMPT_SHA256} from '../dist/graph-agent/system.js';
+import {createDirectionBudget} from '../dist/unified/direction-budget.js';
+import {MULTI_WORKER_POLICY} from '../dist/unified/exploration.js';
+import {EVIDENCE_PRESENTATION_VERSION} from '../dist/graph-agent/evidence.js';
 
 const flags=new Map();for(let i=2;i<process.argv.length;i+=2){const key=process.argv[i],value=process.argv[i+1];if(!['--output','--data-dir','--previous-run','--continue-confirmation'].includes(key)||!value||flags.has(key))throw Error('Use --output DIR --data-dir DIR [--previous-run DIR] [--continue-confirmation yes]');flags.set(key,value);}
 const root=resolve(flags.get('--output')??'runs/drop-answer-contract-small'),dataDir=resolve(flags.get('--data-dir')??'data/datasets');
@@ -36,12 +39,12 @@ const picked=stratifiedSample(full.tasks,36,20261029,t=>lengthBucket(t.prompt.le
 const subset=tasks=>({...full,tasks,identity:{...full.identity,selectedCount:tasks.length},evaluate:(runner,options)=>full.evaluateSearchSubset(tasks.map(t=>t.id),runner,options),
  evaluateSearchSubset:(ids,runner,options)=>{if(ids.some(id=>!tasks.some(t=>t.id===id)))throw Error('Outside frozen group');return full.evaluateSearchSubset(ids,runner,options);}});
 const timeBudget={requestMs:120000,workflowMs:300000,reason:'Explicit bounded DROP answer-contract diagnostic, not formal Test'};
-const limits={toolRepair:{maxCalls:6,maxTokens:20000},search:{maxCalls:220,maxTokens:360000},confirmation:{maxCalls:160,maxTokens:220000},regression:{maxCalls:24,maxTokens:50000}};
+const limits={toolRepair:{maxCalls:6,maxTokens:20000},search:{maxCalls:500,maxTokens:700000},confirmation:{maxCalls:160,maxTokens:220000},regression:{maxCalls:48,maxTokens:90000}};
 const manifest=continuing?{...priorManifest,status:'continuing-confirmation',continuation:{driverHash:createHash('sha256').update(await readFile(new URL(import.meta.url))).digest('hex'),reason:'Keep the stopped search and pending artifact; confirm only its best complete candidate, without increasing the search budget.'}}:{schemaVersion:1,experiment:'Ditto DROP user-answer-contract and exact-error-feedback small validation',date:'2026-10-30',formal:false,formalTest:false,
- protocol:'unified-small-discovery24x1-confirm12x2-answer-v2',sourceCommit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8',windowsHide:true}).trim(),
+ protocol:'unified-small-discovery24x1-confirm12x2-answer-v3-multiworker',explorationPolicy:MULTI_WORKER_POLICY,evidencePresentation:EVIDENCE_PRESENTATION_VERSION,sourceCommit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8',windowsHide:true}).trim(),
  sourceWorkingTreeDirty:!!execFileSync('git',['status','--porcelain'],{encoding:'utf8',windowsHide:true}).trim(),runtimeIdentity,environment,data:full.identity,
  driverHash:createHash('sha256').update(await readFile(new URL(import.meta.url))).digest('hex'),seed:20261029,
- discoveryIds:discovery.map(t=>t.id),confirmationIds:confirmation.map(t=>t.id),searchRepeats:1,confirmationRepeats:2,maxValidEvaluations:3,maxDesignRounds:4,maxProposalAttempts:3,
+ discoveryIds:discovery.map(t=>t.id),confirmationIds:confirmation.map(t=>t.id),searchRepeats:1,confirmationRepeats:2,maxValidEvaluations:5,maxDesignRounds:4,maxProposalAttempts:3,
  limits,timeBudget,model:settings.model,endpoint:settings.baseUrl,systemPromptSha256:UNIFIED_SYSTEM_PROMPT_SHA256,nodeSystemSha256:NODE_SYSTEM_PROMPT_SHA256,
  publicAnswerContract:publicAnswerContract('drop'),scorer:'unchanged main drop-token-f1-max-alternatives',
  note:'Known diagnostic panel reused for paired comparison, not a new blind holdout. Confirmation and targeted regressions never enter optimizer feedback. Same source dataset and split as prior run.',status:'preparing'};
@@ -49,11 +52,13 @@ if(continuing){await store.write('manifest-before-confirmation-continuation.json
 await store.write('manifest.json',manifest);if(!continuing){await store.snapshot(project);await cp(resolve(project,'dist'),store.path('code-snapshot/dist'),{recursive:true});}
 let phase='toolRepair';
 const budgets=Object.fromEntries(Object.entries(limits).map(([name,limit])=>[name,createProviderBudget({...limit,...(continuing?{restored:priorManifest.usage[name]}:{}),onEvent:e=>store.append('usage.jsonl',{phase:name,...e})})]));
+let activeDirection='baseline';
+const directionBudget=createDirectionBudget({...limits.search,...(continuing?{restored:await store.optional('provider-direction-budgets.json')}:{}),onChange:value=>store.write('provider-direction-budgets.json',value)});
 const ids=new WeakMap();
 const experiment=createExperimentRuntime(settings,{timeBudget,connectTimeoutMs:5000,
- beforeProviderCall:async input=>{await budgets[phase].beforeProviderCall(input);const id=randomUUID();ids.set(input,{id,phase});await store.append('provider-requests.jsonl',{id,phase,at:new Date().toISOString(),input});},
- afterProviderCall:async e=>{const request=ids.get(e.input);await budgets[request?.phase??phase].afterProviderCall(e);await store.append('provider-responses.jsonl',{...request,at:new Date().toISOString(),metadata:e.input.metadata,output:e.output,diagnostics:e.diagnostics,error:e.error instanceof Error?{name:e.error.name,message:e.error.message}:e.error});}});
-const emit=async e=>{await store.append('events.jsonl',{phase,at:new Date().toISOString(),...e});if(['stage-completed','unified-proposal-rejected','unified-evaluation-completed','unified-quality-pruned','unified-design-skipped'].includes(e.type))console.log(JSON.stringify({phase,type:e.type,id:e.id??e.attempt?.id,score:e.attempt?.evaluation?.score??e.score,stage:e.stage,errors:e.attempt?.publicErrors}));};
+ beforeProviderCall:async input=>{if(phase==='search')await directionBudget.beforeProviderCall(input,activeDirection);await budgets[phase].beforeProviderCall(input);const id=randomUUID();ids.set(input,{id,phase,direction:phase==='search'?activeDirection:undefined});await store.append('provider-requests.jsonl',{id,phase,direction:phase==='search'?activeDirection:undefined,at:new Date().toISOString(),input});},
+ afterProviderCall:async e=>{const request=ids.get(e.input);await budgets[request?.phase??phase].afterProviderCall(e);if(request?.phase==='search')await directionBudget.afterProviderCall(e);await store.append('provider-responses.jsonl',{...request,at:new Date().toISOString(),metadata:e.input.metadata,output:e.output,diagnostics:e.diagnostics,error:e.error instanceof Error?{name:e.error.name,message:e.error.message}:e.error});}});
+const emit=async e=>{if(e.type==='unified-parent-selected')activeDirection=e.explorationDirection??'baseline';await store.append('events.jsonl',{phase,at:new Date().toISOString(),...e});if(['stage-completed','unified-proposal-rejected','unified-evaluation-completed','unified-quality-pruned','unified-design-skipped','unified-direction-budget-stopped'].includes(e.type))console.log(JSON.stringify({phase,type:e.type,id:e.id??e.attempt?.id,direction:e.attempt?.explorationDirection,score:e.attempt?.evaluation?.score??e.score,stage:e.stage,errors:e.attempt?.publicErrors}));};
 async function evaluate(definition,id,tasks,repeats,reference,prune=false){return evaluateUnifiedCandidate({benchmark:subset(tasks),definition,id,store:new UnifiedRunStore(join(root,phase)),executionIdentity:{runtimeIdentity,phase,driverHash:manifest.driverHash},repeats,concurrency:3,retryAttempts:2,timeBudget,prune,...(reference?{reference}:{}),runTask:(d,t)=>runGraphAgent(d,t,experiment,settings),onEvent:emit});}
 
 async function checkToolRepair(){
@@ -91,8 +96,8 @@ try{
   await checkToolRepair();
   phase='search';manifest.status='searching';await store.write('manifest.json',manifest);
   try{result=await searchUnifiedWorkflows({runtime:experiment.runtime,model:{provider:experiment.providerName,model:experiment.model},dataset:'drop',publicTasks:discovery,expectedRepeats:1,
-   maxValidEvaluations:3,maxDesignRounds:4,maxProposalAttempts:3,seed:20261029,identity:artifactHash(manifest),
-   evaluate:(d,id,ref)=>evaluate(d,id,discovery,1,ref,true),save:async s=>{state=s;await store.write('search-state.json',s);},event:emit});}
+   maxValidEvaluations:5,maxDesignRounds:4,maxProposalAttempts:3,seed:20261029,identity:artifactHash(manifest),
+   evaluate:(d,id,ref,context)=>{activeDirection=context?.direction??'baseline';return evaluate(d,id,discovery,1,ref,true);},save:async s=>{state=s;await store.write('search-state.json',s);},event:emit});}
   catch(e){if(e.code!=='SEARCH_BUDGET_EXHAUSTED'||!state||!bestUnifiedCandidate(state.history))throw e;result={state,best:bestUnifiedCandidate(state.history)};manifest.searchStopReason='SEARCH_BUDGET_EXHAUSTED; pending/partial candidate excluded';}
  }
  await store.write('frozen-selection.json',{selectedBeforeConfirmation:true,id:result.best.id,definition:result.best.definition,artifactHash:result.best.artifactHash,discoveryF1:result.best.evaluation.score});
@@ -104,7 +109,7 @@ try{
  if(previous){
   phase='regression';manifest.status='regression';await store.write('manifest.json',manifest);
   const frozen=JSON.parse(await readFile(join(previous,'frozen-selection.json'),'utf8'));
-  const regressionIds=['drop:8499','drop:1142','drop:0','drop:543','drop:1432','drop:131'];
+  const regressionIds=['drop:8499','drop:1142','drop:0','drop:543','drop:1432','drop:131','drop:5333'];
   const panel=regressionIds.map(id=>full.tasks.find(t=>t.id===id));if(panel.some(t=>!t))throw Error('Missing targeted regression task');
   await evaluate(frozen.definition,'previous-winner-new-contract',panel,1);
   await store.write('regression/protocol.json',{definitionFrozenFrom:previous,ids:regressionIds,repeats:1,notUsedForSelection:true});
