@@ -223,6 +223,9 @@ async def record_http_request(request):
     if current is not None:
         current["attempts"] += 1
         log({"phase": "http-attempt", "id": current["requestId"], "attempt": current["attempts"]})
+        # Payload evidence only: never archive Authorization or signed headers.
+        if os.environ.get("DITTO_PROVIDER_LOG"):
+            log({"phase": "http-request", "id": current["requestId"], "attempt": current["attempts"], "body": json.loads(request.content)})
         if _attempt_reporting.get():
             emit({"id": current["requestId"], "event": "attempt", "diagnostics": dict(current)})
 
@@ -232,6 +235,18 @@ async def record_http_response(response):
     if current is not None:
         if response.status_code >= 400:
             current["failedAttempts"] += 1
+        if response.status_code == 429:
+            await response.aread()
+            try:
+                error_code = response.json().get("error", {}).get("code")
+            except (ValueError, TypeError, AttributeError):
+                error_code = None
+            if isinstance(error_code, str) and error_code in ("AccountQuotaExceeded", "AccountRateLimitExceeded"):
+                current["providerErrorCode"] = error_code
+            if error_code == "AccountQuotaExceeded":
+                # The SDK honors this local retry-control header. An exhausted
+                # subscription cannot be repaired by retrying the same request.
+                response.headers["x-should-retry"] = "false"
         log({"phase": "http-status", "id": current["requestId"], "attempt": current["attempts"], "status": response.status_code})
         if _attempt_reporting.get():
             emit({"id": current["requestId"], "event": "attempt", "status": response.status_code, "diagnostics": dict(current)})
@@ -364,6 +379,8 @@ async def main():
                 raw = aggregate.raw
             account_usage(diagnostics, raw, failed=True)
             diagnostic = safe_provider_error(error, body, provider_request_id)
+            if diagnostic.get("code") in ("AccountQuotaExceeded", "AccountRateLimitExceeded"):
+                diagnostics["providerErrorCode"] = diagnostic["code"]
             status = 504 if isinstance(error, TimeoutError) else diagnostic["status"]
             result = {"id": request["id"], "status": status, "body": {"error": diagnostic}, "diagnostics": diagnostics}
             if stream_started:

@@ -18,6 +18,52 @@ spec.loader.exec_module(bridge)
 
 
 class BridgeTest(unittest.TestCase):
+    def test_real_sdk_does_not_retry_exhausted_quota_but_retries_transient_429(self):
+        async def exercise(code):
+            requests = []
+            def handler(request):
+                requests.append(request)
+                if code == "AccountQuotaExceeded" or len(requests) < 3:
+                    return httpx.Response(429, json={"error": {"code": code, "message": "offline fixture"}})
+                return httpx.Response(200, json={"id": "fixture", "object": "chat.completion", "created": 1,
+                    "model": "fixture", "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]})
+            diagnostics = {"requestId": 1, "attempts": 0, "failedAttempts": 0}
+            token = bridge._attempt_context.set(diagnostics)
+            client = AsyncOpenAI(api_key="offline", base_url="https://example.invalid", max_retries=2,
+                http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                    event_hooks={"request": [bridge.record_http_request], "response": [bridge.record_http_response]}))
+            try:
+                try:
+                    await client.chat.completions.create(model="fixture", messages=[{"role": "user", "content": "public"}])
+                except APIStatusError:
+                    if code != "AccountQuotaExceeded":
+                        raise
+                return len(requests)
+            finally:
+                bridge._attempt_context.reset(token)
+                await client.close()
+        with patch.object(bridge, "log", lambda _event: None), patch.dict(os.environ, {"DITTO_PROVIDER_LOG": ""}):
+            self.assertEqual(asyncio.run(exercise("AccountQuotaExceeded")), 1)
+            self.assertEqual(asyncio.run(exercise("AccountRateLimitExceeded")), 3)
+
+    def test_quota_exhaustion_suppresses_sdk_retry_without_disabling_rate_limit_retry(self):
+        async def exercise(code):
+            diagnostics = {"requestId": 1, "attempts": 1, "failedAttempts": 0}
+            token = bridge._attempt_context.set(diagnostics)
+            response = httpx.Response(429, json={"error": {"code": code}})
+            try:
+                await bridge.record_http_response(response)
+                return response, diagnostics
+            finally:
+                bridge._attempt_context.reset(token)
+        with patch.object(bridge, "log", lambda _event: None):
+            quota, quota_diag = asyncio.run(exercise("AccountQuotaExceeded"))
+            rate, rate_diag = asyncio.run(exercise("AccountRateLimitExceeded"))
+        self.assertEqual(quota.headers["x-should-retry"], "false")
+        self.assertEqual(quota_diag["providerErrorCode"], "AccountQuotaExceeded")
+        self.assertNotIn("x-should-retry", rate.headers)
+        self.assertEqual(rate_diag["providerErrorCode"], "AccountRateLimitExceeded")
+
     def test_opt_in_attempt_progress_exposes_counts_and_http_failures_without_request_data(self):
         replies = []
 
