@@ -68,6 +68,15 @@ test("support-block parsing preserves constants, multiline imports and decorated
   assert.equal(extractPythonCandidate(`\`\`\`python\n${invalid}\n\`\`\`\n\`\`\`python\n${entry}\n\`\`\``, "def answer(x):", "answer"), invalid);
 });
 
+test("an explanatory signature-only fence cannot replace the implementation", () => {
+  const entry = "def answer(x):\n    return x";
+  for (const signature of ["def answer(x):", "def answer(\n    x: int,\n) -> int:", "import math\n\ndef answer(x):\n    # implementation follows"]) {
+    assert.equal(extractPythonCandidate(`\`\`\`python\n${signature}\n\`\`\`\n\`\`\`python\n${entry}\n\`\`\``, "def answer(x):", "answer"), entry);
+  }
+  const badImplementation = "def answer(x):\n    return x +";
+  assert.equal(extractPythonCandidate(`\`\`\`python\n${badImplementation}\n\`\`\`\n\`\`\`python\n${entry}\n\`\`\``, "def answer(x):", "answer"), badImplementation);
+});
+
 test("MBPP body completion excludes prose and retains the actual graded candidate privately", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ditto-mbpp-"));
   const expected = "def answer(x):\n    if x:\n        return x\n    return 0";

@@ -231,14 +231,16 @@ function compactDiagnostics(stdout: string, stderr: string, passed: boolean): st
 
 export function extractPythonCandidate(modelOutput: string, publicPrompt: string, entryPoint: string): string {
   const fences = [...modelOutput.matchAll(/```(?:python|py)?[^\S\r\n]*\r?\n([\s\S]*?)```/gi)].map((match) => match[1]!.trimEnd());
-  const entryIndex = fences.findIndex((candidate) => containsEntryPoint(candidate, entryPoint));
+  const classifications = fences.length > 1 ? supportingPythonBlocks(fences) : [];
+  const firstEntryIndex = fences.findIndex((candidate) => containsEntryPoint(candidate, entryPoint));
+  const implementationIndex = fences.findIndex((candidate, index) => containsEntryPoint(candidate, entryPoint) && !classifications[index]?.signatureOnly);
+  const entryIndex = implementationIndex >= 0 ? implementationIndex : firstEntryIndex;
   const fencedWithEntry = fences[entryIndex];
   // Keep the first complete entry-point block unchanged. Other fences may be
   // REPL transcripts, prose, tests or partial usage snippets, rather than code
   // belonging to the solution. Parse only their public syntax; never run them.
-  const support = fencedWithEntry && fences.length > 1 ? supportingPythonBlocks(fences) : [];
   const extracted = fencedWithEntry ? fences.filter((block, index) => index === entryIndex ||
-    (!containsEntryPoint(block, entryPoint) && support[index])).join("\n\n")
+    (!containsEntryPoint(block, entryPoint) && classifications[index]?.support)).join("\n\n")
     : fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
   if (containsEntryPoint(extracted, entryPoint)) {
     // Public imports and helpers precede HumanEval's incomplete entry point.
@@ -254,16 +256,17 @@ export function extractPythonCandidate(modelOutput: string, publicPrompt: string
   return `${publicPrompt.trimEnd()}\n${body}`;
 }
 
-function supportingPythonBlocks(blocks: readonly string[]): boolean[] {
+function supportingPythonBlocks(blocks: readonly string[]): { support: boolean; signatureOnly: boolean }[] {
   const python = process.env.DITTO_PROVIDER_PYTHON?.trim() || "python";
   const script = fileURLToPath(new URL("../../scripts/python_support_blocks.py", import.meta.url));
   const result: unknown = JSON.parse(execFileSync(python, ["-I", "-B", "-X", "utf8", script], {
     input: JSON.stringify(blocks), encoding: "utf8", timeout: 5_000, maxBuffer: 1024 * 1024, windowsHide: true,
   }));
-  if (!Array.isArray(result) || result.length !== blocks.length || result.some(value => typeof value !== "boolean")) {
+  if (!Array.isArray(result) || result.length !== blocks.length || result.some(value =>
+    !value || typeof value.support !== "boolean" || typeof value.signatureOnly !== "boolean")) {
     throw new Error("Invalid Python support-block syntax classification");
   }
-  return result as boolean[];
+  return result;
 }
 
 function stripPlainLanguagePrefix(output: string): string {
