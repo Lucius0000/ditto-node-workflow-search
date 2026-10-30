@@ -21,6 +21,8 @@ node --experimental-vm-modules dist/unified/fixed-engineering.js <protocol.json>
 
 Automation工具只在声明的Graph/Loop内执行，公开schema和观察进入下一次推理，私有世界、contract及评分留在评估端。评分使用真实最终世界，partialCredit只作诊断。模型格式错误和声明预算耗尽计有效0；provider、bridge、judge故障仍为工程无效。judge-only恢复必须使用原world/prediction，不重新生成答案。取消活动官方操作会丢弃bridge，并把世界结果记为未知；这不提供回滚保证。
 
+Automation决策缺少必填字段时，仅在使用宿主明确的响应指令及公开工具schema的情况下判模型格式错误。通用JSON路径错误仍是绑定失败；`coalesce`保留可选默认值，包括`api_search.top_k = 5`。
+
 代码判题先要求 `docker-ready` 成功及本地已有不可变镜像。生成程序的容器内期限为12秒，宿主60秒监督属于基础设施边界。打印固定标记或提前退出不能满足随机完成标记；该检查不证明可以防御任意恶意程序对测试环境的探查。
 
 每次运行固定源码、编译产物、提示词、定义、数据成员/顺序、provider及官方环境身份。证据包含不带认证头的HTTP payload、原始响应、实际节点输入输出、送判程序/真实世界，以及已知和未知用量。包含私有测试/世界的结果保留在公开仓库外。身份变化后拒绝按旧run恢复。

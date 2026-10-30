@@ -12,6 +12,8 @@ import {createExperimentRuntime,applyModelProfile} from '../ditto/runtime.js';
 import {runGraphAgent} from '../graph-agent/executor.js';
 import {BASELINE_DEFINITION,validateDefinition,type GraphDefinition} from '../graph-agent/schema.js';
 import {evaluateBinding,ModelOutputFormatError,MissingBindingPath} from '../graph-agent/bindings.js';
+import {automationBaseline,validateAutomationDecision} from '../graph-agent/automation-baseline.js';
+import {automationScope,type AutomationSession} from '../benchmark/automation.js';
 
 const task:BenchmarkTask={id:'automationbench:offline',dataset:'automationbench',prompt:'Public task',outputInstruction:'',metadata:{}};
 const result:AgentRunResult={answer:'original prediction',executedNodeIds:[],executedGraphIds:[],inputTokens:10,outputTokens:3,totalTokens:13};
@@ -25,12 +27,46 @@ test('provider finish_reason=error remains an infrastructure failure and can rec
  assert.equal(calls,1);assert.equal(summary.valid,false);assert.equal(summary.results[0]!.failureKind,'provider');assert.match(summary.results[0]!.error!,/finish_reason=error/);
 });
 
-test('missing model JSON fields are format loss while missing non-model data stays an adapter failure',()=>{
+test('generic JSON get preserves missing paths and coalesce defaults, including outside Automation',()=>{
  const env={task:{},nodes:{decide:{message:{content:'{"tool":"api_fetch","arguments":{}}'}}},prior:{},state:{},nodeOutput:(_id:string,value:any)=>value,isModelNode:(id:string)=>id==='decide'};
  const argument={get:{value:{get:{value:{parse:{ref:['nodes','decide','message','content']}},path:['arguments']}},path:['body']}};
- assert.throws(()=>evaluateBinding(argument,env),ModelOutputFormatError);
+ assert.throws(()=>evaluateBinding(argument,env),MissingBindingPath);
+ assert.equal(evaluateBinding({coalesce:[argument,{literal:5}]},env),5);
+ const unknown={get:{value:{parse:{ref:['nodes','decide','message','content']}},path:['notDeclaredByModelInstruction']}};
+ assert.throws(()=>evaluateBinding(unknown,env),MissingBindingPath);
  assert.throws(()=>evaluateBinding({get:{value:{literal:{}},path:['body']}},env),MissingBindingPath);
  env.nodes.decide.message.content='{"arguments":{"body":null}}';assert.equal(evaluateBinding(argument,env),null);
+});
+
+const automationTools=[
+ {name:'api_search',inputSchema:{type:'object',properties:{query:{type:'string'},top_k:{type:'integer'}},required:['query','top_k']}},
+ {name:'api_fetch',inputSchema:{type:'object',properties:{method:{type:'string'},url:{type:'string'},params:{type:['string','null']},body:{type:['string','null']}},required:['method','url','params','body']}},
+ {name:'base64_encode',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}},
+];
+test('Automation contract checks only declared required fields and accepts nullable API arguments',()=>{
+ assert.doesNotThrow(()=>validateAutomationDecision('{"done":false,"tool":"api_search","arguments":{"query":"test"}}','decide',automationTools));
+ assert.doesNotThrow(()=>validateAutomationDecision('{"done":false,"tool":"api_fetch","arguments":{"method":"GET","url":"public","params":null,"body":null}}','decide',automationTools));
+ assert.throws(()=>validateAutomationDecision('{"done":false,"tool":"api_fetch","arguments":{"method":"GET","url":"public","params":null}}','decide',automationTools),ModelOutputFormatError);
+});
+test('Automation optional top_k reaches the tool as 5, missing required fields are model loss, and a misspelled binding stays engineering-invalid',async()=>{
+ const settings={baseUrl:'https://offline.invalid',apiKey:'offline',model:'fixture',concurrency:1,timeoutMs:3000};
+ async function execute(response:any,mutate?:(definition:GraphDefinition)=>void){
+  const calls:any[]=[],runtime=createExperimentRuntime(settings,{provider:{async invoke(){return{message:{role:'assistant',content:JSON.stringify(calls.length?{done:true,tool:'',arguments:{}}:response)},finishReason:'stop',usage:{inputTokens:1,outputTokens:1,totalTokens:2}};}}});
+  const session:AutomationSession={tools:automationTools,assertHealthy(){},record(){},async call(name,args){calls.push({name,args});return{content:'official observation'};}};
+  const definition=automationBaseline(3);mutate?.(definition);
+  try{return{run:await automationScope.run(session,()=>runGraphAgent(definition,task,runtime,settings)),calls};}finally{await runtime.close();}
+ }
+ const search=await execute({done:false,tool:'api_search',arguments:{query:'test'}});
+ assert.equal(search.calls[0].args.top_k,5);assert.equal(search.run.modelFailure,undefined);
+ const nullable=await execute({done:false,tool:'api_fetch',arguments:{method:'GET',url:'public',params:null,body:null}});
+ assert.equal(nullable.calls[0].args.params,null);assert.equal(nullable.calls[0].args.body,null);
+ const missing=await execute({done:false,tool:'api_fetch',arguments:{method:'GET',url:'public',params:null}});
+ assert.equal(missing.calls.length,0);assert.equal(missing.run.modelFailure?.code,'MODEL_OUTPUT_FORMAT');assert.equal(missing.run.answer,'');
+ const graded=await evaluateTasks([task],{expectedLabel:label,async score(_id,prediction){return{score:prediction===''?0:1,expected:'fixture',prediction,normalizedExpected:'fixture',normalizedPrediction:prediction,method:'offline-format-fixture'};}},async()=>missing.run,{retryAttempts:1});
+ assert.equal(graded.valid,true);assert.equal(graded.score,0);
+ await assert.rejects(()=>execute({done:false,tool:'api_search',arguments:{query:'test'}},definition=>{
+  definition.graphs[1]!.nodes[0]!.config.arguments.query={get:{value:{parse:{ref:['nodes','decide','message','content']}},path:['notDeclaredByModelInstruction']}};
+ }),error=>(error as any).failureKind==='execution'&&/notDeclaredByModelInstruction/.test(String(error)));
 });
 
 test('judge-only recovery reuses the original prediction, checkpoint and usage without running an actor',async()=>{

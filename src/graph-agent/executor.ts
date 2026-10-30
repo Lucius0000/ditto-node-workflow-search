@@ -21,6 +21,7 @@ import {NODE_SYSTEM_PROMPT,NODE_SYSTEM_VERSION} from './system.js';
 import {automationScope,AUTOMATION_TOOLS} from '../benchmark/automation.js';
 import {createAutomationTools} from '../ditto/automation-tools.js';
 import {AutomationActorBudgetExceeded} from '../execution/automation-budget.js';
+import {usesAutomationDecisionContract,validateAutomationDecision} from './automation-baseline.js';
 
 class GraphRunBudgetExceeded extends Error {}
 
@@ -116,6 +117,7 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
   }
   if(raw.output?.generationOutcome?.usable===false)throw new ModelOutputFormatError('Model output was incomplete and unusable',id);
   const node=nodes.get(id)!;let value=raw;
+  if(task.dataset==='automationbench'&&automation&&usesAutomationDecisionContract(node))validateAutomationDecision(messageContentText(successfulOutput(raw,id)?.message?.content,id),id,automation.tools);
   if(node.type==='INFER.REASONING.REFLECT'){
    const binding=reflectionBindings.get(id);if(!binding)throw new AgentContractError('Missing application-owned reflection binding',id);
    let substantive=raw;if(contract.preservedNodes.has(id)){const{revisedResult:_injected,...fields}=raw.output;substantive={...raw,output:fields};}

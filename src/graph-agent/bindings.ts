@@ -82,15 +82,7 @@ export function evaluateBinding(value:any,env:BindingEnvironment):any {
      return readBindingPath(['nodes','prior'].includes(namespace)?env.nodeOutput(id,item):item,path);
     }catch(error){if(error instanceof MissingBindingPath)throw new MissingBindingPath(`Required ref ${JSON.stringify(value.ref)}: ${error.message}`);throw error;}
   }
-  if(Object.hasOwn(value,'get')){
-    try{return readBindingPath(evaluateBinding(value.get.value,env),value.get.path);}
-    catch(error){
-      const origin=(binding:any):any=>binding?.parse?.ref??(binding?.get?origin(binding.get.value):undefined);
-      const reference=origin(value.get.value);
-      if(error instanceof MissingBindingPath&&Array.isArray(reference)&&['nodes','prior'].includes(reference[0])&&env.isModelNode(reference[1])&&['message','result'].includes(reference[2])&&reference[3]==='content')throw new ModelOutputFormatError('Model JSON omitted a field required by its declared output contract',reference[1]);
-      throw error;
-    }
-  }
+  if(Object.hasOwn(value,'get'))return readBindingPath(evaluateBinding(value.get.value,env),value.get.path);
   if(Object.hasOwn(value,'json'))return JSON.stringify(evaluateBinding(value.json,env));
   if(Object.hasOwn(value,'parse')){
     const text=evaluateBinding(value.parse,env);

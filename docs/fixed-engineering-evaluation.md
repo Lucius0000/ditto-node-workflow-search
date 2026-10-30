@@ -21,6 +21,8 @@ Datasets run concurrently through one pool capped at 18 model calls, six per acc
 
 Automation tools execute only inside the declared Graph/Loop. Public schemas and observations reach the next inference; worlds, contracts and strict grading stay private. Grading uses the actual final world. Partial credit is diagnostic. Model format loss and declared execution-budget exhaustion are valid zeroes; provider, bridge and judge failures remain invalid. Judge-only recovery requires the original world/prediction and does not regenerate an answer. Cancelling an active official bridge call discards the bridge and records an unknown world outcome; this provides no rollback guarantee.
 
+Missing required Automation decision fields become model-format loss only under the exact host-owned response instruction and public tool schema. Generic JSON path errors remain binding failures; `coalesce` can still supply an optional default, including `api_search.top_k = 5`.
+
 Code judging requires a successful `docker-ready` check and a pre-pulled immutable image. The generated program has a 12-second in-container deadline; the 60-second host watchdog is an infrastructure boundary. Fixed marker printing and early exit cannot satisfy the randomized completion marker. This check is not a proof against arbitrary malicious test-harness introspection.
 
 Every run freezes source, compiled artifacts, prompts, definitions, data membership/order, provider and official-environment identity. It archives HTTP payloads without authentication headers, raw responses, actual node inputs/outputs, graded programs/worlds and known/unknown usage. Results containing private tests/worlds remain outside the public repository. A changed identity cannot resume an old run.
