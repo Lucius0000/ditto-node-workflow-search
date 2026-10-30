@@ -19,6 +19,8 @@ import {UNIFIED_SYSTEM_PROMPT,UNIFIED_SYSTEM_PROMPT_SHA256} from './prompts.js';
 import {createProviderBudget,type ProviderBudgetSnapshot} from './provider-budget.js';
 import {UnifiedRunStore,artifactHash} from './store.js';
 import {evaluateUnifiedCandidate} from './evaluation.js';
+import {automationBaseline} from '../graph-agent/automation-baseline.js';
+import {automationIdentity} from '../benchmark/automation.js';
 
 export const UNIFIED_FORMAL_PROTOCOL='ditto-declarative-staged-main-splits-v1';
 export interface UnifiedCLIOptions{
@@ -66,14 +68,16 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
  const previousUser=options.resume?await store.optional<{text:string}>('prompts/initial-user.json'):undefined;
  const initialUser=options.userPromptFile?await readFile(options.userPromptFile,'utf8'):previousUser?.text;
  if(initialUser!==undefined&&(!initialUser.trim()||initialUser.length>8000))throw Error('User prompt file must contain 1..8000 characters');
- const initialDefinition=structuredClone(BASELINE_DEFINITION);
+ const initialDefinition=options.dataset==='automationbench'?automationBaseline(60):structuredClone(BASELINE_DEFINITION);
  if(initialUser!==undefined){const solver=initialDefinition.graphs.flatMap(graph=>graph.nodes).find(node=>node.type==='INFER.REASONING.SAMPLE');if(!solver)throw Error('Baseline lacks SAMPLE');solver.config.instruction=initialUser;}
  const benchmark=await loadBenchmark(options.dataset,{dataDir:options.dataDir,split:options.command==='search'?'validate':'test',dataMode:'formal',limit:0,
-  ...(options.dataset==='humaneval'||options.dataset==='mbpp'?{codeJudge:new DockerPythonJudge({image:options.dockerImage})}:{})});
- if(!benchmark.identity?.verified||benchmark.tasks.length!==fixedSplitLock(options.dataset,benchmark.split).count)throw Error('Unified formal evaluation requires the complete pinned split');
+  ...(options.dataset==='humaneval'||options.dataset==='mbpp'?{codeJudge:new DockerPythonJudge({image:options.dockerImage})}:{}),
+  ...(options.dataset==='automationbench'?{artifactDir:store.path('private')}:{})});
+ if(!benchmark.identity?.verified||benchmark.tasks.length!==(options.dataset==='automationbench'?(benchmark.split==='validate'?200:600):fixedSplitLock(options.dataset,benchmark.split).count))throw Error('Unified formal evaluation requires the complete pinned split');
  const repeats=options.command==='search'?5:3;
  const identity={protocol:UNIFIED_FORMAL_PROTOCOL,executionIdentity,promptHash:UNIFIED_SYSTEM_PROMPT_SHA256,nodeSystemHash:NODE_SYSTEM_PROMPT_SHA256,initialDefinitionHash:options.command==='search'?artifactHash(initialDefinition):null,model:settings.model,endpoint:settings.baseUrl,generation:GENERATION,
   dataset:options.dataset,split:benchmark.split,data:benchmark.identity,taskIds:benchmark.tasks.map(task=>task.id),repeats,timeBudget,
+  ...(options.dataset==='automationbench'?{automation:await automationIdentity()}:{}),
   maxValidEvaluations:options.maxValidEvaluations,maxDesignRounds:options.maxDesignRounds,maxProposalAttempts:options.maxProposalAttempts,seed:options.seed,
   concurrency:options.concurrency,maxCalls:options.maxCalls,maxTokens:options.maxTokens,dockerImage:options.dockerImage};
  if(previousManifest&&artifactHash(previousManifest.identity)!==artifactHash(identity))throw Error('Resume data/runtime/prompt/model/repeat/resource identity differs');

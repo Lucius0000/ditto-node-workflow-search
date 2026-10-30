@@ -4,6 +4,7 @@ import type {ModuleShape} from '../coding/module.js';
 import {validateModuleSyntax} from '../coding/source-guard.js';
 import {parseExpressionAt} from 'acorn';
 import {validateBinding,bindingReferences,validatePath} from './bindings.js';
+import {AUTOMATION_TOOLS} from '../benchmark/automation.js';
 
 export const GRAPH_AGENT_POLICY='ditto-unified-graph-agent-v1';
 export const NODE_TYPES=['CONTEXT.LOAD','CONTEXT.SELECT','CONTEXT.UPDATE','CONTEXT.COMPRESS',
@@ -156,7 +157,7 @@ export function validateDefinition(input:unknown):GraphDefinition{
   if(t.inputSchema.required!==undefined)check(Array.isArray(t.inputSchema.required)&&t.inputSchema.required.every((key:any)=>typeof key==='string'&&Object.hasOwn(t.inputSchema.properties??{},key)),'required must list declared property names',`${path}.inputSchema.required`,'Declare each required argument in properties and list its name in required.');
   atDefinitionPath(`${path}.executeSource`,()=>{text(t.executeSource,'tool source');validateModuleSyntax(`export const execute=(${t.executeSource});`);const fn:any=parseExpressionAt(t.executeSource,0,{ecmaVersion:'latest'});check(['FunctionExpression','ArrowFunctionExpression'].includes(fn.type)&&!fn.async&&!fn.generator,'Generated tool must be a synchronous pure function');});
  });}
- const builtins=['bounded_arithmetic','literal_text_find'];const available=new Set([...builtins,...(d.tools??[]).map(t=>t.name)]);check(!(d.tools??[]).some(t=>builtins.includes(t.name)),'Cannot redefine a host tool');for(const{node}of nodes.values())if(node.type==='INTERACTION.ACT.TOOL')check(available.has(node.config.tool),'Tool is not registered');
+ const builtins=['bounded_arithmetic','literal_text_find',...AUTOMATION_TOOLS];const available=new Set([...builtins,...(d.tools??[]).map(t=>t.name)]);check(!(d.tools??[]).some(t=>builtins.includes(t.name)),'Cannot redefine a host tool');for(const{node}of nodes.values())if(node.type==='INTERACTION.ACT.TOOL')check(available.has(node.config.tool),'Tool is not registered');
  const refs=(v:any):string[]=>[...sources(v).filter(s=>s.from==='node'||s.from==='previous').map(s=>(s as Extract<SemanticSource,{from:'node'}>).nodeId),...bindingReferences(v).map(r=>r.nodeId)];
  // State writers are genuine consumers even when a later lookup connects through a key,
  // rather than an explicit source edge back to the write node.

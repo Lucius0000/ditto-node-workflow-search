@@ -4,7 +4,7 @@ import {DATASETS,type DatasetName} from '../domain.js';
 import {runUnifiedExperiment,type UnifiedCLIOptions} from './runner.js';
 
 export function parseUnifiedArguments(argv:readonly string[],cwd=process.cwd()):UnifiedCLIOptions{
- const [command,...rest]=argv;if(command!=='search'&&command!=='test')throw Error('Usage: unified/cli.js search|test --dataset <drop|humaneval|mbpp|gsm8k|math> [options]');
+ const [command,...rest]=argv;if(command!=='search'&&command!=='test')throw Error('Usage: unified/cli.js search|test --dataset <drop|humaneval|mbpp|gsm8k|math|automationbench> [options]');
  const flags=new Map<string,string>();
  const allowed=new Set(['dataset','data-dir','output-dir','run-dir','user-prompt-file','resume','offline-only','max-valid-evaluations','rounds','max-design-rounds','max-proposal-attempts','seed','concurrency','max-calls','max-tokens','request-timeout-ms','workflow-timeout-ms','docker-image']);
  for(let i=0;i<rest.length;i+=2){const key=rest[i],value=rest[i+1];if(!key?.startsWith('--')||value===undefined||value.startsWith('--')||!allowed.has(key.slice(2))||flags.has(key.slice(2)))throw Error('Invalid or duplicate option: '+key);flags.set(key.slice(2),value);}

@@ -21,11 +21,12 @@ export interface BenchmarkLoadOptions {
   readonly limit?: number;
   readonly seed?: number;
   readonly codeJudge?: CodeJudge;
+  readonly artifactDir?: string;
 }
 
 /** Public provenance only: no reference answers or private judge material. */
 export interface BenchmarkIdentity {
-  readonly protocol: "aflow-fixed-v1" | "fixture";
+  readonly protocol: "aflow-fixed-v1" | "fixture" | "automationbench-public-simple-v1";
   readonly dataMode: "formal" | "fixture";
   readonly baselineRepository: string;
   readonly baselineCommit: string;
@@ -48,6 +49,10 @@ export interface BenchmarkEvaluationOptions {
   readonly repeats?: number;
   readonly concurrency?: number;
   readonly retryAttempts?: number;
+  /** Total attempts across same-identity recovery, rather than per invocation. */
+  readonly cumulativeRetries?: boolean;
+  readonly automationBudget?: import('../execution/automation-budget.js').AutomationBudgetPolicy;
+  readonly automationBudgetPersistence?: import('../execution/automation-budget.js').AutomationBudgetPersistence;
   /** Caller must verify the complete execution identity before supplying recovery records. */
   readonly priorCases?: readonly CaseResult[];
   /** Called after each case finishes; useful for live progress without exposing private judge data. */
@@ -78,7 +83,8 @@ export interface BenchmarkAdapter {
 }
 
 export interface PrivateScorer {
-  score(taskId: string, prediction: string): Promise<ScoreEvidence>;
+  score(taskId: string, prediction: string, prior?: CaseResult): Promise<ScoreEvidence>;
+  recoveryData?(taskId: string): unknown;
   expectedLabel(taskId: string): string;
 }
 

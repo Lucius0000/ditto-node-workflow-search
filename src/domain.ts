@@ -1,6 +1,6 @@
 import type { DeliberationMode, ReflectionMode } from "@codesoul-co/ditto/worker/infer";
 
-export const DATASETS = ["drop", "humaneval", "mbpp", "gsm8k", "math"] as const;
+export const DATASETS = ["drop", "humaneval", "mbpp", "gsm8k", "math", "automationbench"] as const;
 export type DatasetName = (typeof DATASETS)[number];
 
 export const STRATEGIES = ["cot", "long-cot", "tot", "got", "self-consistency"] as const;
@@ -165,6 +165,9 @@ export interface ScoreEvidence {
 }
 
 export interface CaseResult extends ScoreEvidence {
+  readonly judgeRecovery?: unknown;
+  readonly automationBudgetProgress?: import('./execution/automation-budget.js').AutomationBudgetProgress;
+  readonly executionBudget?: {readonly scope:'graph-runs'|'actor-calls';readonly limit:number;readonly used:number};
   readonly candidateFailure?: {readonly kind:string;readonly message:string;readonly nodeId?:string;readonly code?:string};
   readonly timeBudgetOutcome?: import("./execution/time-budget.js").TimeBudgetOutcome;
   readonly checkerAudits?: readonly CheckerAudit[];
@@ -239,6 +242,8 @@ export interface SearchExperience {
 
 /** One logical provider invocation, including each underlying HTTP retry. */
 export interface ProviderCallDiagnostics {
+  /** Allowlisted structured service code; never headers, credentials or bodies. */
+  readonly providerErrorCode?: string;
   /** Provider-reported identity; an alias alone does not prove a fixed model version. */
   readonly responseModel?: string;
   readonly systemFingerprint?: string;
@@ -263,6 +268,7 @@ export interface GenerationOutcome {
 }
 
 export interface AgentRunResult {
+  readonly executionBudget?: CaseResult['executionBudget'];
   readonly candidateFailure?: {readonly kind:string;readonly message:string;readonly nodeId?:string;readonly code?:string};
   readonly checkerAudits?: readonly CheckerAudit[];
   readonly generationOutcomes?: readonly GenerationOutcome[];

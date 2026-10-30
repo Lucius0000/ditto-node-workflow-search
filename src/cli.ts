@@ -302,6 +302,7 @@ function metricProfile(dataset: DatasetName): string {
     case "mbpp": return "docker-private-tests-pass-at-1-v1";
     case "gsm8k": return "last-number-accuracy-v1";
     case "math": return "aflow-symbolic-plus-declared-answer-normalized-v3";
+    case "automationbench": throw new Error("AutomationBench requires the declarative Graph/Loop executor");
   }
 }
 
@@ -312,6 +313,7 @@ function taskGoal(dataset: DatasetName): string {
     mbpp: "Search a compact Ditto Node path that produces correct MBPP Python functions under private tests.",
     gsm8k: "Search a compact Ditto Node path that solves GSM8K word problems with correct final numbers.",
     math: "Search a compact Ditto Node path that maximizes mathematical answer accuracy on competition problems.",
+    automationbench: "Execute official AutomationBench tools inside a declarative Graph/Loop.",
   }[dataset];
   const prompts = baselinePrompts(dataset);
   return prompts ? `${goal}\nThe initial root uses the pinned MFlow agent seed. These public review and integration seeds are editable references for prompt search; preserve the dataset answer contract.\n\nReview seed:\n${prompts.review}\n\nIntegration seed:\n${prompts.integrate}` : goal;
@@ -327,6 +329,7 @@ function initialInstruction(dataset: DatasetName): string {
     // Ditto's baseline objective empty; differences added by Ditto Node
     // semantics remain the intended framework variable.
     case "math": return "";
+    case "automationbench": throw new Error("AutomationBench requires the declarative Graph/Loop executor");
   }
 }
 

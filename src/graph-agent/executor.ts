@@ -18,6 +18,11 @@ import {validateDefinition,topologicalNodes,type GraphDefinition,type Definition
 import {evaluateBinding,readBindingPath,BindingContractError,ModelOutputFormatError,type BindingEnvironment} from './bindings.js';
 import {createTaskRetrieval} from './retrieval.js';
 import {NODE_SYSTEM_PROMPT,NODE_SYSTEM_VERSION} from './system.js';
+import {automationScope,AUTOMATION_TOOLS} from '../benchmark/automation.js';
+import {createAutomationTools} from '../ditto/automation-tools.js';
+import {AutomationActorBudgetExceeded} from '../execution/automation-budget.js';
+
+class GraphRunBudgetExceeded extends Error {}
 
 export class AgentContractError extends Error {
  readonly code='B_AGENT_CONTRACT';readonly failureKind='execution';readonly publicMessage:string;
@@ -79,6 +84,10 @@ export function projectValue(source:Extract<SemanticSource,{from:'node'}>,raw:an
 const asText=(value:any):string=>typeof value==='string'?value:JSON.stringify(value);
 export async function runGraphAgent(inputDefinition:GraphDefinition,task:BenchmarkTask,shared:ExperimentRuntime,settings:ProviderSettings):Promise<GraphAgentResult> {
  const definition=validateDefinition(inputDefinition),signal=currentTimeBudgetSignal();
+ const automation=automationScope.getStore();
+ if(task.dataset==='automationbench'&&!automation)throw new AgentContractError('Automation execution requires a fresh task world');
+ if(!automation&&definition.graphs.some(g=>g.nodes.some(n=>n.type==='INTERACTION.ACT.TOOL'&&(AUTOMATION_TOOLS as readonly string[]).includes(n.config.tool))))throw new AgentContractError('Official Automation tools require a task world');
+ const toolCatalog=automation?`\n\nAvailable official task-world tools (call through the declared Graph):\n${JSON.stringify(automation.tools)}`:'';
  for(const g of definition.graphs)for(const node of g.nodes)if(node.type==='INFER.REASONING.REFLECT')validateCheckerCriteria(task.dataset,node.config.criteria);
  const standard=createBenchmarkTools(),custom=generatedTools(definition.tools??[]),retrieval=createTaskRetrieval(task);
  const contract=graphAgentReflectionProvider(shared.provider),modelResponses:ModelResponseRecord[]=[];
@@ -88,7 +97,7 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
   try{const response=await contract.provider.invoke(input,options);modelResponses.push({nodeId:String(input.metadata?.nodeId??'unknown'),nodeType:String(input.metadata?.nodeType??'unknown'),rawContent:structuredClone(response.message.content),finishReason:response.finishReason,systemMessages:input.messages.filter(m=>m.role==='system').map(m=>structuredClone(m.content))});return response;}
   catch(error){providerFault=error;throw error;}
  }};
- const scoped=createExperimentRuntime(settings,{provider:recordingProvider,managedProvider:true,tools:[...standard,...custom.tools],workers:[retrieval.worker],memory:createTaskMemory(),reflectionEvent:async event=>{
+ const scoped=createExperimentRuntime(settings,{provider:recordingProvider,managedProvider:true,tools:[...standard,...custom.tools,...createAutomationTools()],workers:[retrieval.worker],memory:createTaskMemory(),reflectionEvent:async event=>{
   if(event.outcome==='exhausted')exhaustedReflections.set(String(event.nodeId),event.error??'Model reflection did not satisfy its fixed output contract');
   await shared.reflectionEvent?.(event);
  }});
@@ -129,7 +138,7 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
   const evidence=()=> (c.evidence??[]).map((s:Source)=>asText(get(s))).join('\n\n');
   const extra=()=>c.user===undefined?'':asText(get(c.user));
   const format=()=>c.outputFormat==='json'?'\n\nDeclared node output format: return strict JSON only.':'';
-  const userMessages=()=>[{role:'user' as const,content:`Original task:\n${task.prompt}\n\nNode instruction:\n${c.instruction??''}\n\nAdditional user material:\n${extra()}\n\nTask output requirements:\n${taskOutputRequirements(task)}${format()}`}];
+  const userMessages=()=>[{role:'user' as const,content:`Original task:\n${task.prompt}\n\nNode instruction:\n${c.instruction??''}\n\nAdditional user material:\n${extra()}\n\nTask output requirements:\n${taskOutputRequirements(task)}${format()}${toolCatalog}`}];
   switch(node.type){
    case'CONTEXT.LOAD':return{sources:c.sources.map((s:Source,i:number)=>({id:`${node.id}-source-${i}`,content:get(s)}))};
    case'CONTEXT.SELECT':return{context:get(c.context),purpose:'infer',strategy:{kind:'default'},...(c.query!==undefined?{query:asText(get(c.query))}:{}),...(c.limit?{limit:c.limit}:{}),...(c.maxTokens?{maxTokens:c.maxTokens}:{})};
@@ -147,7 +156,7 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
    case'INFER.REASONING.SAMPLE':{
     const instruction=c.instruction||baselinePrompts(task.dataset)?.agent||'Solve the original public task accurately.';
     const body=task.dataset==='drop'||task.dataset==='gsm8k'?baselineTextMessages(task.dataset,instruction,task.prompt,evidence()):[{role:'user' as const,content:`${instruction}\n\n${task.prompt}\n\nOutput requirements:\n${task.outputInstruction}\n\n${evidence()}`}];
-    const additional=c.user===undefined?[]:[{role:'user' as const,content:extra()}];
+    const additional=[...(c.user===undefined?[]:[{role:'user' as const,content:extra()}]),...(toolCatalog?[{role:'user' as const,content:toolCatalog}]:[])];
     return{messages:[{role:'system',content:NODE_SYSTEM_PROMPT},...(task.dataset==='drop'?additional:[]),...body,...(task.dataset==='drop'?[]:additional),...(task.dataset==='drop'&&task.outputInstruction?[{role:'user',content:`Additional public task output requirements:\n${task.outputInstruction}`}]:[]),...(c.outputFormat==='json'?[{role:'user',content:format()}]:[])],model,generation:GENERATION,metadata};
    }
    case'INFER.REASONING.TRAJECTORY':return{messages:[{role:'system',content:NODE_SYSTEM_PROMPT},...userMessages(),{role:'user',content:`Evidence:\n${evidence()}`}],objective:c.instruction,strategy:{name:c.strategy,options:c.options??{}},constraints:{maxSteps:c.maxSteps??Number.MAX_SAFE_INTEGER},model,generation:GENERATION,metadata};
@@ -179,7 +188,7 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
  const visits:Record<string,number>={};
  const next=(t:Transition):string|undefined=>{switch(t.kind){case'end':return undefined;case'next':return t.graphId;case'repeat':return matches(t.until)||(visits[t.graphId]??0)>=t.maxVisits?t.nextGraphId:t.graphId;case'switch':return t.cases.find(c=>matches(c.when))?.graphId??t.defaultGraphId;}};
  const definitionLoop=loop<BenchmarkTask,string>({id:'declarative-execution-agent',maxIterations:definition.loop.maxGraphRuns,*plan(){let current:string|undefined=definition.loop.entryGraphId,runs=0;
-  while(current!==undefined){if(runs++>=definition.loop.maxGraphRuns)throw new AgentContractError('Declared Graph/Loop budget exhausted');const currentId=current;executedGraphIds.push(currentId);visits[currentId]=(visits[currentId]??0)+1;
+  while(current!==undefined){if(runs++>=definition.loop.maxGraphRuns)throw new GraphRunBudgetExceeded('Declared Graph/Loop budget exhausted');const currentId=current;executedGraphIds.push(currentId);visits[currentId]=(visits[currentId]??0)+1;
    const raw:Record<string,any>=yield*graphStep(compiled.get(currentId),{prior:{...nodeOutputs},state:structuredClone(state)},signal?{signal}:{});
    for(const[id,value]of Object.entries(raw))nodeOutputs[id]=normalize(id,value);
    const snapshot=structuredClone(state),patch=Object.fromEntries(Object.entries(definition.loop.stateUpdates?.[currentId]??{}).map(([key,value])=>[key,resolve(value,nodeOutputs,nodeOutputs,snapshot)]));Object.assign(state,structuredClone(patch));
@@ -191,6 +200,8 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
  const result=(answer:string,modelFailure?:GraphAgentResult['modelFailure']):GraphAgentResult=>({answer,finalPrediction:answer,executedNodeIds,executedGraphIds,inputTokens:0,outputTokens:0,totalTokens:0,...currentProviderUsage(),nodeInputs,nodeOutputs,convertedNodeOutputs:nodeOutputs,rawNodeOutputs,trace,checkerAudits:audits,reflectionResponses:contract.responses,modelResponses,state:structuredClone(state),generationOutcomes:Object.values(nodeOutputs).flatMap(value=>value?.output?.generationOutcome?[value.output.generationOutcome]:[]),...(modelFailure?{modelFailure}:{})});
  try{const answer=await captureCapabilityOutputs(event=>{if(!nodes.has(event.nodeId))return;rawNodeOutputs[event.nodeId]=structuredClone(event.output);nodeOutputs[event.nodeId]=event.output;executedNodeIds.push(event.nodeId);trace.push({graphId:event.graphId,nodeId:event.nodeId,output:structuredClone(event.output)});nodeOutputs[event.nodeId]=normalize(event.nodeId,event.output);},()=>scoped.runtime.loop(definitionLoop,task,signal?{signal}:{}));return result(answer);}
  catch(error){
+  if(error instanceof AutomationActorBudgetExceeded||providerFault instanceof AutomationActorBudgetExceeded)return {...result(''),executionBudget:(providerFault instanceof AutomationActorBudgetExceeded?providerFault:error as AutomationActorBudgetExceeded).outcome};
+  if(error instanceof GraphRunBudgetExceeded)return {...result(''),executionBudget:{scope:'graph-runs',limit:definition.loop.maxGraphRuns,used:executedGraphIds.length}};
   if(providerFault)throw Object.assign(providerFault instanceof Error?providerFault:new Error(String(providerFault)),currentProviderUsage(),{partialRun:result(''),infrastructureFailure:true});
   if(error instanceof ModelOutputFormatError)return result('',{kind:'model-output',code:error.code,message:error.message,...(error.nodeId?{nodeId:error.nodeId}:{})});
   const failure=error instanceof AgentContractError?error:error instanceof BindingContractError?new AgentContractError(error.message):error instanceof Error?error:new Error(String(error));
