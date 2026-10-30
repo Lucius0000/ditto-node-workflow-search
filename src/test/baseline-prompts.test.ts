@@ -7,6 +7,7 @@ import { createInferWorker } from "@codesoul-co/ditto/worker/infer";
 import {
   assertBaselinePromptProfile, baselinePromptProfile, baselinePrompts, baselineTextMessages, MFLOW_PROMPT_SOURCE,
 } from "../benchmark/baseline-prompts.js";
+import {DROP_ANSWER_CONTRACT,DROP_ANSWER_CONTRACT_VERSION} from '../benchmark/answer-contract.js';
 import type { BenchmarkTask } from "../domain.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
 import { createInitialSampleNode, createRootNode, materializeAgentPlan } from "../workflow/spec.js";
@@ -25,8 +26,8 @@ const upstreamPromptHashes = {
   },
 };
 
-test("DROP and GSM8K seed prompts match the frozen MFlow source byte for byte", () => {
-  for (const dataset of ["drop", "gsm8k"] as const) {
+test("GSM8K remains pinned while DROP explicitly versions its revised public user contract", () => {
+  for (const dataset of ["gsm8k"] as const) {
     const prompts = baselinePrompts(dataset)!;
     for (const role of ["agent", "review", "integrate"] as const) {
       assert.equal(createHash("sha256").update(prompts[role]).digest("hex"), upstreamPromptHashes[dataset][role]);
@@ -34,11 +35,18 @@ test("DROP and GSM8K seed prompts match the frozen MFlow source byte for byte", 
   }
   assert.equal(MFLOW_PROMPT_SOURCE.commit, "9279d7d91bbce039656f5cd3a6bb539cea75fe85");
   assert.equal(baselinePrompts("math"), undefined);
+  assert.equal(baselinePromptProfile('drop')!.id,DROP_ANSWER_CONTRACT_VERSION);
+  for(const value of Object.values(baselinePrompts('drop')!)){
+    const message=baselineTextMessages('drop',value,'Public task')[0]!.content;
+    assert.match(message,/NUMERIC VALUE/);assert.match(message,/ENTITY OR ENTITY SET/);assert.match(message,/PASSAGE SPAN WITH UNITS/);
+    assert.doesNotMatch(message,/multiple answer spans may be separated with/);
+  }
+  assert.notEqual(createHash('sha256').update(baselinePrompts('drop')!.agent).digest('hex'),upstreamPromptHashes.drop.agent);
 });
 
 const rootSuffixes = {
   gsm8k: "\n\nAssignment: Solve the task and integrate relevant evidence.\nCapability: General task reasoning and evidence integration\nReasoning approach: cot\nExpected output: Complete mathematical solution ending in a boxed final answer.\nStopping criterion: A complete solution or a concrete unresolved obstacle is stated.\n",
-  drop: "\n\nAssignment: Answer the supplied reading-comprehension question accurately.\nCapability: Evidence-grounded reading comprehension\nReasoning approach: cot\nExpected output: Answer the question using only the supplied passage and question. Return only the concise final answer; multiple answer spans may be separated with |. Do not include a derivation, Markdown or a boxed answer.\nStopping criterion: A complete answer or a concrete unresolved obstacle is stated.\n",
+  drop: `\n\nAssignment: Answer the supplied reading-comprehension question accurately.\nCapability: Evidence-grounded reading comprehension\nReasoning approach: cot\nExpected output: ${DROP_ANSWER_CONTRACT}\nStopping criterion: A complete answer or a concrete unresolved obstacle is stated.\n`,
 };
 
 test("root message assembly preserves the public task and MFlow profile without an adapter suffix", () => {
@@ -83,8 +91,8 @@ test("missing or changed baseline prompt provenance cannot resume into the new p
   for (const dataset of ["drop", "gsm8k"] as const) {
     const profile = baselinePromptProfile(dataset)!;
     assertBaselinePromptProfile(dataset, JSON.parse(JSON.stringify(profile)));
-    assert.throws(() => assertBaselinePromptProfile(dataset, undefined), /pinned MFlow contract/);
-    assert.throws(() => assertBaselinePromptProfile(dataset, { ...profile, source: { commit: "other" } }), /pinned MFlow contract/);
+    assert.throws(() => assertBaselinePromptProfile(dataset, undefined), /versioned public prompt contract/);
+    assert.throws(() => assertBaselinePromptProfile(dataset, { ...profile, source: { commit: "other" } }), /versioned public prompt contract/);
   }
   assertBaselinePromptProfile("math", undefined);
 });

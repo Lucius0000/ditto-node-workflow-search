@@ -78,8 +78,9 @@ export function evaluateBinding(value:any,env:BindingEnvironment):any {
   if(Object.hasOwn(value,'ref')){
     const [namespace,id,...path]=value.ref;
     const source=env[namespace as 'task'|'nodes'|'prior'|'state'];
-    const item=readBindingPath(source,[id]);
-    return readBindingPath(['nodes','prior'].includes(namespace)?env.nodeOutput(id,item):item,path);
+    try{const item=readBindingPath(source,[id]);
+     return readBindingPath(['nodes','prior'].includes(namespace)?env.nodeOutput(id,item):item,path);
+    }catch(error){if(error instanceof MissingBindingPath)throw new MissingBindingPath(`Required ref ${JSON.stringify(value.ref)}: ${error.message}`);throw error;}
   }
   if(Object.hasOwn(value,'get'))return readBindingPath(evaluateBinding(value.get.value,env),value.get.path);
   if(Object.hasOwn(value,'json'))return JSON.stringify(evaluateBinding(value.json,env));

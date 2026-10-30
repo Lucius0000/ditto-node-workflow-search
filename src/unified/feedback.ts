@@ -1,4 +1,6 @@
 import type {BenchmarkTask,CaseResult,EvaluationSummary} from '../domain.js';
+import {publicAnswerWarnings,taskOutputRequirements} from '../benchmark/answer-contract.js';
+import type {DefinitionIssue} from '../graph-agent/schema.js';
 
 export interface FeedbackEvaluation extends EvaluationSummary {
   readonly qualityPruned?:boolean;
@@ -14,6 +16,7 @@ export interface FeedbackRecord {
   readonly evaluation?:FeedbackEvaluation;
   /** Application-owned public contract errors only; never CaseResult.error. */
   readonly publicErrors?:readonly string[];
+  readonly publicIssues?:readonly DefinitionIssue[];
 }
 
 const isObject=(value:unknown):value is Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -119,11 +122,13 @@ export function buildUnifiedFeedback(history:readonly FeedbackRecord[],tasks:rea
         totalTokens:evaluation?.totalTokens??null,providerAttempts:evaluation?.providerAttemptCount??null,durationMs:evaluation?.durationMs??null,
         usageStatus:evaluation?.tokenUsageStatus??'unknown'},
       cases:selected.map((item,index)=>({taskId:item.taskId,prompt:promptSnippet(taskMap.get(item.taskId)!.prompt,4000),
-        outputInstruction:clipped(taskMap.get(item.taskId)!.outputInstruction,1000),pairedDelta:item.delta,
+        outputInstruction:clipped(taskOutputRequirements(taskMap.get(item.taskId)!),2600),pairedDelta:item.delta,
         outcomes:item.outcomes.slice(0,5).map(row=>({caseId:row.caseId,score:row.score,prediction:clipped(row.prediction,350),
-          reference:prior.has(row.caseId)?{score:prior.get(row.caseId)!.score,prediction:clipped(prior.get(row.caseId)!.prediction,350)}:null})),
+          answerContractWarnings:publicAnswerWarnings(taskMap.get(item.taskId)!,row.prediction),
+          parentOutcome:prior.has(row.caseId)?{candidateId:reference!.id,score:prior.get(row.caseId)!.score,prediction:clipped(prior.get(row.caseId)!.prediction,350)}:null})),
         outcomesTruncated:item.outcomes.length>5,...(index<3?{trace:publicTrace(record,item.taskId)}:{traceOmitted:true})})),
       engineering:{publicContractErrors:(record.publicErrors??[]).slice(-5).map(message=>clipped(message,700)),
+        contractIssues:(record.publicIssues??[]).slice(-5).map(issue=>({code:issue.code,path:issue.path,message:clipped(issue.message,700),repairHint:clipped(issue.repairHint,700)})),
         issues:(evaluation?.engineeringIssues??[]).slice(0,5).map(issue=>({code:issue.code,message:clipped(issue.message,700)}))},
       truncation:{casesOmitted:Math.max(0,cases.length-selected.length),traceCaseLimit:3},
     };
@@ -132,7 +137,7 @@ export function buildUnifiedFeedback(history:readonly FeedbackRecord[],tasks:rea
     candidateFeedback.push(feedback);
   }
   const includedIds=new Set(candidateFeedback.map(row=>String(row.id)));
-  return {source:'public-field-whitelist-v1',candidateCount:history.length,feedback:candidateFeedback,
+  return {source:'public-field-whitelist-v2',scoreInterpretation:'Scores and parentOutcome are measured candidate outputs, not reference answers. A low text-F1 score does not identify a reasoning error. Check the actual computation and requested answer type; contract warnings are observable hints, not gold-derived root-cause labels.',candidateCount:history.length,feedback:candidateFeedback,
     omittedCandidateIds:history.filter(row=>!chosenIds.has(row.id)||!includedIds.has(row.id)).map(row=>row.id),
     truncated:includedIds.size<history.length,maxCharacters};
 }

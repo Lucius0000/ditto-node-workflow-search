@@ -9,6 +9,7 @@ import {captureCapabilityOutputs} from '../workflow/capability-observer.js';
 import {applyCheckerSemantics,type ReflectionBinding} from '../workflow/checker-semantics.js';
 import {checkerContract,validateCheckerCriteria} from '../workflow/checker-policy.js';
 import {baselinePrompts,baselineTextMessages} from '../benchmark/baseline-prompts.js';
+import {taskOutputRequirements} from '../benchmark/answer-contract.js';
 import {currentProviderUsage,currentTimeBudgetSignal} from '../execution/time-budget.js';
 import {GENERATION} from '../protocol.js';
 import {generatedTools} from './tools.js';
@@ -20,7 +21,9 @@ import {NODE_SYSTEM_PROMPT,NODE_SYSTEM_VERSION} from './system.js';
 
 export class AgentContractError extends Error {
  readonly code='B_AGENT_CONTRACT';readonly failureKind='execution';readonly publicMessage:string;
- constructor(message:string,readonly nodeId?:string){super(message);this.publicMessage=message;}
+ readonly publicIssue:{code:string;path:string;message:string;repairHint:string};
+ constructor(message:string,readonly nodeId?:string){super(message);this.publicMessage=`${nodeId?`Node ${nodeId}: `:''}${message}`;
+  this.publicIssue={code:this.code,path:nodeId?`nodes.${nodeId}`:'workflow',message:this.publicMessage,repairHint:'Correct the named native binding, argument or declared output. Use the documented native field path; preserve the original task and scorer.'};}
 }
 export interface ModelResponseRecord {nodeId:string;nodeType:string;rawContent:SampleOutput['message']['content'];finishReason:string;systemMessages:unknown[]}
 export interface GraphAgentResult extends AgentRunResult {
@@ -126,7 +129,7 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
   const evidence=()=> (c.evidence??[]).map((s:Source)=>asText(get(s))).join('\n\n');
   const extra=()=>c.user===undefined?'':asText(get(c.user));
   const format=()=>c.outputFormat==='json'?'\n\nDeclared node output format: return strict JSON only.':'';
-  const userMessages=()=>[{role:'user' as const,content:`Original task:\n${task.prompt}\n\nTask output requirements:\n${task.outputInstruction}\n\nNode instruction:\n${c.instruction??''}\n\nAdditional user material:\n${extra()}${format()}`}];
+  const userMessages=()=>[{role:'user' as const,content:`Original task:\n${task.prompt}\n\nNode instruction:\n${c.instruction??''}\n\nAdditional user material:\n${extra()}\n\nTask output requirements:\n${taskOutputRequirements(task)}${format()}`}];
   switch(node.type){
    case'CONTEXT.LOAD':return{sources:c.sources.map((s:Source,i:number)=>({id:`${node.id}-source-${i}`,content:get(s)}))};
    case'CONTEXT.SELECT':return{context:get(c.context),purpose:'infer',strategy:{kind:'default'},...(c.query!==undefined?{query:asText(get(c.query))}:{}),...(c.limit?{limit:c.limit}:{}),...(c.maxTokens?{maxTokens:c.maxTokens}:{})};
@@ -144,7 +147,8 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
    case'INFER.REASONING.SAMPLE':{
     const instruction=c.instruction||baselinePrompts(task.dataset)?.agent||'Solve the original public task accurately.';
     const body=task.dataset==='drop'||task.dataset==='gsm8k'?baselineTextMessages(task.dataset,instruction,task.prompt,evidence()):[{role:'user' as const,content:`${instruction}\n\n${task.prompt}\n\nOutput requirements:\n${task.outputInstruction}\n\n${evidence()}`}];
-    return{messages:[{role:'system',content:NODE_SYSTEM_PROMPT},...body,...(c.user===undefined?[]:[{role:'user',content:extra()}]),...(c.outputFormat==='json'?[{role:'user',content:format()}]:[])],model,generation:GENERATION,metadata};
+    const additional=c.user===undefined?[]:[{role:'user' as const,content:extra()}];
+    return{messages:[{role:'system',content:NODE_SYSTEM_PROMPT},...(task.dataset==='drop'?additional:[]),...body,...(task.dataset==='drop'?[]:additional),...(task.dataset==='drop'&&task.outputInstruction?[{role:'user',content:`Additional public task output requirements:\n${task.outputInstruction}`}]:[]),...(c.outputFormat==='json'?[{role:'user',content:format()}]:[])],model,generation:GENERATION,metadata};
    }
    case'INFER.REASONING.TRAJECTORY':return{messages:[{role:'system',content:NODE_SYSTEM_PROMPT},...userMessages(),{role:'user',content:`Evidence:\n${evidence()}`}],objective:c.instruction,strategy:{name:c.strategy,options:c.options??{}},constraints:{maxSteps:c.maxSteps??Number.MAX_SAFE_INTEGER},model,generation:GENERATION,metadata};
    case'INFER.REASONING.DELIBERATE':return{messages:userMessages(),objective:c.instruction||task.outputInstruction||'Return the final answer.',candidates:c.candidates.map((s:Source,i:number)=>({id:`candidate-${i}`,result:{role:'assistant',content:asText(get(s))}})),mode:c.mode,model,generation:GENERATION,metadata};
@@ -160,7 +164,9 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
  };
  const compiled=new Map<string,any>();
  for(const g of definition.graphs){let builder:any=graph<{prior:Record<string,any>;state:Record<string,any>}>(g.id);for(const node of topologicalNodes(g))builder=builder.node(node.id,node.type,node.dependencies,(frame:{prior:Record<string,any>;state:Record<string,any>},local:Record<string,any>)=>{
-  const available={...frame.prior,...Object.fromEntries(node.dependencies.map(id=>[id,local[id]]))};const bound=bind(node,available,frame.prior,frame.state);nodeInputs[node.id]=structuredClone(bound);return bound;
+  const available={...frame.prior,...Object.fromEntries(node.dependencies.map(id=>[id,local[id]]))};
+  try{const bound=bind(node,available,frame.prior,frame.state);nodeInputs[node.id]=structuredClone(bound);return bound;}
+  catch(error){if(error instanceof BindingContractError)throw new AgentContractError(error.message,node.id);throw error;}
  });compiled.set(g.id,builder);}
  const matches=(condition:Condition):boolean=>{
   let left=resolve(condition.source??condition.left,nodeOutputs);if(condition.path)left=readBindingPath(left,condition.path);

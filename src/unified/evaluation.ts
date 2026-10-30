@@ -1,7 +1,7 @@
 import type {AgentRunResult,BenchmarkTask,CaseResult,EvaluationSummary} from '../domain.js';
 import type {LoadedBenchmark,BenchmarkEvaluationOptions} from '../benchmark/types.js';
 import type {TimeBudgetPolicy} from '../execution/time-budget.js';
-import type {GraphDefinition} from '../graph-agent/schema.js';
+import type {DefinitionIssue,GraphDefinition} from '../graph-agent/schema.js';
 import {pairedRegressionDecision,unifiedStages} from './policy.js';
 import type {UnifiedCandidate,UnifiedEvaluation} from './search.js';
 import {UnifiedRunStore,artifactHash,caseFile} from './store.js';
@@ -22,6 +22,7 @@ export class UnifiedEvaluationError extends Error{
  readonly failureKind:string;
  readonly code:string;
  readonly publicMessage:string;
+ readonly publicIssue:DefinitionIssue;
  constructor(message:string,row:CaseResult,original?:unknown){
   super(message,{cause:original});this.name='UnifiedEvaluationError';
   this.failureKind=row.failureKind??'execution';
@@ -29,6 +30,8 @@ export class UnifiedEvaluationError extends Error{
   this.infrastructureFailure=['provider','timeout','judge'].includes(this.failureKind)||this.code==='SEARCH_BUDGET_EXHAUSTED';
   const publicText=(original as {publicMessage?:unknown}|undefined)?.publicMessage;
   this.publicMessage=!this.infrastructureFailure&&typeof publicText==='string'?publicText:'Public workflow interface validation failed; consult the retained host diagnostics. No benchmark answer or private scorer detail is supplied.';
+  const issue=(original as {publicIssue?:DefinitionIssue}|undefined)?.publicIssue;
+  this.publicIssue=issue&&typeof publicText==='string'?{code:issue.code,path:issue.path,message:this.publicMessage,repairHint:issue.repairHint}:{code:this.code,path:'workflow',message:this.publicMessage,repairHint:'Repair the public workflow contract; inspect retained host diagnostics without requesting private scorer data.'};
  }
 }
 

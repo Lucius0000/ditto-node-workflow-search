@@ -5,11 +5,12 @@ import {GENERATION} from '../protocol.js';
 import {SeededRandom} from '../search/random.js';
 import {checkAFlowConvergence} from '../search/convergence.js';
 import {captureProviderDiagnostics,summarizeProviderDiagnostics} from '../ditto/provider-diagnostics.js';
-import {BASELINE_DEFINITION,validateDefinition,validateDefinitionChange,digest,NODE_TYPES,type GraphDefinition} from '../graph-agent/schema.js';
+import {BASELINE_DEFINITION,validateDefinition,validateDefinitionChange,digest,NODE_TYPES,DefinitionError,type DefinitionIssue,type GraphDefinition} from '../graph-agent/schema.js';
 import {GRAPH_DEFINITION_GUIDE} from '../graph-agent/search.js';
 import {buildUnifiedFeedback,type FeedbackEvaluation} from './feedback.js';
 import {UNIFIED_DEFAULTS,UNIFIED_SEARCH_POLICY,comparableTokens} from './policy.js';
 import {UNIFIED_OPTIMIZER_SYSTEM,UNIFIED_OPTIMIZER_SYSTEM_SHA256,UNIFIED_PROMPT_VERSION} from './prompts.js';
+import {publicAnswerContract,taskOutputRequirements} from '../benchmark/answer-contract.js';
 
 export interface UnifiedEvaluation extends FeedbackEvaluation {}
 export interface UnifiedAttempt {
@@ -24,6 +25,7 @@ export interface UnifiedAttempt {
   readonly evaluation?:UnifiedEvaluation;
   readonly rawResponse?:string;
   readonly publicErrors?:readonly string[];
+  readonly publicIssues?:readonly DefinitionIssue[];
 }
 export interface UnifiedCandidate extends UnifiedAttempt {
   readonly status:'valid'; readonly definition:GraphDefinition; readonly rationale:string;
@@ -35,7 +37,7 @@ export interface UnifiedPending {
 }
 export interface UnifiedSelection {
   readonly designRound:number; readonly parentId:string; readonly proposalAttempts:number;
-  readonly contractRepair?:{readonly rejectedAttemptId:string;readonly definition?:GraphDefinition;readonly rawResponse?:string;readonly errors:readonly string[]};
+  readonly contractRepair?:{readonly rejectedAttemptId:string;readonly definition?:GraphDefinition;readonly rawResponse?:string;readonly errors:readonly string[];readonly issues?:readonly DefinitionIssue[]};
 }
 export interface UnifiedSearchState {
   readonly schemaVersion:1; readonly policy:string; readonly configurationHash:string; readonly systemPromptSha256:string;
@@ -152,7 +154,7 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
   const baseline=validateDefinition(options.initialDefinition??{...structuredClone(BASELINE_DEFINITION),version:2});
   if((baseline as {version:number}).version!==2)throw Error('Unified baseline must use version:2');
   const configurationHash=digest({policy:UNIFIED_SEARCH_POLICY,system:UNIFIED_OPTIMIZER_SYSTEM_SHA256,identity:options.identity??null,dataset:options.dataset,
-    model:options.model,generation:GENERATION,taskIds:options.publicTasks.map(task=>task.id),repeats,maxValid,maxDesign,maxAttempts,patience,seed,baseline:unifiedArtifactHash(baseline)});
+    model:options.model,generation:GENERATION,answerContract:publicAnswerContract(options.dataset),taskIds:options.publicTasks.map(task=>task.id),repeats,maxValid,maxDesign,maxAttempts,patience,seed,baseline:unifiedArtifactHash(baseline)});
   const random=new SeededRandom(seed);
   let state:UnifiedSearchState=options.resume?structuredClone(options.resume):{schemaVersion:1,policy:UNIFIED_SEARCH_POLICY,configurationHash,
     systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,validEvaluations:0,designRoundsCompleted:0,proposalAttempts:0,prunedEvaluations:0,engineeringFailures:0,
@@ -201,12 +203,13 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
         if((error as {checkpointFailure?:boolean})?.checkpointFailure)throw error;
         if(infrastructure(error)){await save();await event({type:'unified-evaluation-interrupted',id:pending.id,artifactHash:pending.artifactHash});throw error;}
         const publicError=evaluation?.engineeringIssues?.map(issue=>`${issue.code}: ${issue.message}`).join('\n')||publicContractError(error);
-        const attempt:UnifiedAttempt={...pending,status:'invalid-evaluation',...(evaluation?{evaluation}:{}),publicErrors:[publicError]};
+        const publicIssue=(error as {publicIssue?:DefinitionIssue}).publicIssue??{code:'B_EXECUTION_CONTRACT',path:'workflow',message:publicError,repairHint:'Repair the indicated public workflow interface; never change the benchmark or scorer.'};
+        const attempt:UnifiedAttempt={...pending,status:'invalid-evaluation',...(evaluation?{evaluation}:{}),publicErrors:[publicError],publicIssues:[publicIssue]};
         const {pending:_pending,...rest}=state;
         const selection=state.selection;
         state={...rest,history:[...state.history,attempt],engineeringFailures:state.engineeringFailures+1,
           ...(selection?{selection:{...selection,contractRepair:{rejectedAttemptId:pending.id,definition:pending.definition,
-            ...(pending.rawResponse!==undefined?{rawResponse:pending.rawResponse}:{}),errors:[...new Set([...(selection.contractRepair?.errors??[]),publicError])]}}}:{})};
+            ...(pending.rawResponse!==undefined?{rawResponse:pending.rawResponse}:{}),errors:[...new Set([...(selection.contractRepair?.errors??[]),publicError])],issues:[...(selection.contractRepair?.issues??[]),publicIssue]}}}:{})};
         await save();await event({type:'unified-evaluation-invalid',attempt});
         if(pending.designRound===0)throw Error('Frozen baseline evaluation is engineering-invalid; no valid parent can be fabricated');
         continue;
@@ -233,12 +236,12 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
     const request=JSON.stringify({mode:selection.contractRepair?'ENGINEERING REPAIR':'QUALITY SEARCH',dataset:options.dataset,
       parent:{id:parent.id,definition:parent.definition,score:parent.evaluation.score,totalTokens:parent.evaluation.totalTokens},
       immutableProtocol:{policy:UNIFIED_SEARCH_POLICY,repeats,fullExamples:options.publicTasks.length,systemVersion:UNIFIED_PROMPT_VERSION,
-        systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,capabilities:NODE_TYPES,remainingValidBudget:maxValid-state.validEvaluations,
+        systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,publicAnswerContract:publicAnswerContract(options.dataset),capabilities:NODE_TYPES,remainingValidBudget:maxValid-state.validEvaluations,
         mutationLimits:{mainChange:1,auxiliary:'necessary connected predecessors/successors only',maxDeclaredNodes:24,maxExistingContentChanges:5,maxToolChanges:1,
           dependencyEdgeEdits:'max(12,4*N), N=max(parent,child nodes); reversal costs two'}},
       interfaceGuide:GRAPH_DEFINITION_GUIDE,
       authorizedRetrievalTargets:[{name:'task-public',scope:'only this task public input; never other tasks, labels, confirmation or Test'}],
-      publicTaskExamples:options.publicTasks.slice(0,2).map(task=>({id:task.id,prompt:task.prompt,outputInstruction:task.outputInstruction})),
+      publicTaskExamples:options.publicTasks.slice(0,2).map(task=>({id:task.id,prompt:task.prompt,outputInstruction:taskOutputRequirements(task)})),
       history:state.history.map(row=>({id:row.id,parentId:row.parentId,status:row.status,...(row.rationale?{rationale:row.rationale.slice(0,1000)}:{}),
         ...(isUnifiedCandidate(row)?{score:row.evaluation.score,totalTokens:row.evaluation.totalTokens}:{}),...(row.status==='quality-pruned'?{stage:row.evaluation?.examples}:{}),})),
       measuredFeedback:buildUnifiedFeedback(state.history,options.publicTasks),
@@ -267,11 +270,12 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
     }catch(error){
       if((error as {checkpointFailure?:boolean})?.checkpointFailure)throw error;
       const isInfrastructure=infrastructure(error),publicError=isInfrastructure?'Optimizer infrastructure interrupted the proposal; preserve its intended definition.':message(error).slice(0,1600);
+      const publicIssue:DefinitionIssue=error instanceof DefinitionError?error.issue:{code:'B_PROPOSAL_CONTRACT',path:'proposal',message:publicError,repairHint:'Return a complete valid JSON proposal with the documented fields; use the specific error and retain the intended mechanism.'};
       const attempt:UnifiedAttempt={id,designRound:selection.designRound,proposalAttempt,parentId:parent.id,status:isInfrastructure?'provider-error':'invalid-proposal',
-        ...(rawResponse!==undefined?{rawResponse}:{}),...(definition?{definition,artifactHash:unifiedArtifactHash(definition)}:{}),...(rationale?{rationale}:{}),publicErrors:[publicError]};
+        ...(rawResponse!==undefined?{rawResponse}:{}),...(definition?{definition,artifactHash:unifiedArtifactHash(definition)}:{}),...(rationale?{rationale}:{}),publicErrors:[publicError],...(!isInfrastructure?{publicIssues:[publicIssue]}:{})};
       state={...state,history:[...state.history,attempt],engineeringFailures:state.engineeringFailures+(isInfrastructure?0:1),selection:{...state.selection!,
         ...(!isInfrastructure?{contractRepair:{rejectedAttemptId:id,...(definition?{definition}:{}),...(rawResponse!==undefined?{rawResponse}:{}),
-          errors:[...new Set([...(state.selection?.contractRepair?.errors??[]),publicError])]}}:{})}};
+          errors:[...new Set([...(state.selection?.contractRepair?.errors??[]),publicError])],issues:[...(state.selection?.contractRepair?.issues??[]),publicIssue]}}:{})}};
       await save();await event({type:'unified-proposal-rejected',attempt});if(isInfrastructure)throw error;
     }
   }

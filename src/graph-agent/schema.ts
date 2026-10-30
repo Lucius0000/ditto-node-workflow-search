@@ -28,12 +28,26 @@ export interface GraphDefinition {
  output:{nodeId?:string;view?:'answer';answer?:Source};tools?:ToolDefinition[];
  mutation?:{primaryNodeId:string;auxiliary:{nodeId:string;reason:string}[]};
 }
-export class DefinitionError extends Error {readonly code='B_DEFINITION';}
+export interface DefinitionIssue {readonly code:string;readonly path:string;readonly message:string;readonly repairHint:string}
+export class DefinitionError extends Error {
+ readonly code='B_DEFINITION';
+ constructor(readonly detail:string,readonly path='$',readonly repairHint='Correct this field to match the supplied declaration guide; preserve unrelated working nodes.'){
+  super(`${path}: ${detail}`);this.name='DefinitionError';
+ }
+ get issue():DefinitionIssue{return{code:this.code,path:this.path,message:this.detail,repairHint:this.repairHint};}
+}
 export const digest=(value:unknown):string=>createHash('sha256').update(JSON.stringify(value,(_key,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v)).digest('hex');
-const check=(yes:unknown,message:string):void=>{if(!yes)throw new DefinitionError(message);};
+const check=(yes:unknown,message:string,path?:string,repairHint?:string):void=>{if(!yes)throw new DefinitionError(message,path,repairHint);};
 const record=(v:any):boolean=>v!==null&&typeof v==='object'&&!Array.isArray(v);
-function object(v:any):void{check(record(v),'Expected JSON object');}
-function keys(v:any,allowed:readonly string[]):void{object(v);for(const k of Object.keys(v))check(allowed.includes(k),`Unknown field ${k}`);}
+const kind=(v:any):string=>v===undefined?'missing':v===null?'null':Array.isArray(v)?'array':typeof v;
+function object(v:any,path='$'):void{check(record(v),`Expected JSON object; received ${kind(v)}`,path,'Supply a JSON object at this field, not a string, array or omitted value.');}
+function keys(v:any,allowed:readonly string[],path='$'):void{object(v,path);for(const k of Object.keys(v))check(allowed.includes(k),`Unknown field ${k}; allowed fields: ${allowed.join(', ')}`,`${path}.${k}`,'Remove this unsupported field or use the documented field name.');}
+function atDefinitionPath<T>(path:string,run:()=>T):T{
+ try{return run();}catch(error){
+  if(error instanceof DefinitionError){if(error.path!=='$')throw error;throw new DefinitionError(error.detail,path,error.repairHint);}
+  throw new DefinitionError(error instanceof Error?error.message:String(error),path);
+ }
+}
 function id(v:any):void{check(typeof v==='string'&&/^[a-z][a-z0-9-]{0,63}$/.test(v)&&!['constructor','prototype','__proto__'].includes(v),'Invalid graph/node ID');}
 function positive(v:any,name:string,max=Number.MAX_SAFE_INTEGER):void{check(Number.isSafeInteger(v)&&v>=1&&v<=max,`Invalid ${name}`);}
 function text(v:any,name:string,empty=false):void{check(typeof v==='string'&&(empty||v.trim().length>0)&&v.length<=8000,`Invalid ${name}`);}
@@ -69,10 +83,10 @@ const fields:Record<NodeType,string[]>={
  'INTERACTION.ACT.TOOL':['tool','arguments'],'INTERACTION.OBSERVE':['result'],'RETRIEVAL.SEARCH':['query','target','limit']};
 function required(c:any,key:string):Source{check(Object.hasOwn(c,key),`Missing ${key}`);validateSource(c[key]);return c[key];}
 function view(c:any,key:string,want:View):void{const s=required(c,key);if(s?.from)check(s.from==='node'&&s.view===want,`${key} requires node view=${want}`);}
-function validateNode(n:DefinitionNode):void{
- keys(n,['id','type','dependencies','config']);id(n.id);check(NODE_TYPES.includes(n.type),'Unsupported Ditto node type');
+function validateNode(n:DefinitionNode,path:string):void{
+ keys(n,['id','type','dependencies','config'],path);id(n.id);check(NODE_TYPES.includes(n.type),'Unsupported Ditto node type');
  check(Array.isArray(n.dependencies)&&n.dependencies.every(d=>typeof d==='string')&&new Set(n.dependencies).size===n.dependencies.length,'Invalid dependencies');
- const c=n.config;keys(c,fields[n.type]);
+ const c=n.config;keys(c,fields[n.type],`${path}.config`);
  if(c.instruction!==undefined)text(c.instruction,'instruction',true);if(c.user!==undefined)validateSource(c.user);if(c.outputFormat!==undefined)check(['text','json'].includes(c.outputFormat),'outputFormat must be text or json');
  switch(n.type){
   case'CONTEXT.LOAD':check(Array.isArray(c.sources)&&c.sources.length>0&&c.sources.length<=64,'LOAD sources required');c.sources.forEach(validateSource);break;
@@ -82,11 +96,11 @@ function validateNode(n:DefinitionNode):void{
   case'MEMORY.UPDATE':view(c,'ids','memory-ids');required(c,'content');break;
   case'MEMORY.SEARCH':required(c,'query');if(c.limit!==undefined)positive(c.limit,'memory search limit',1000);break;
   case'MEMORY.QUERY':if(c.filter!==undefined)object(c.filter);break;
-  case'INFER.REASONING.SAMPLE':case'INFER.REASONING.TRAJECTORY':text(c.instruction,'instruction',true);if(c.evidence!==undefined){check(Array.isArray(c.evidence)&&c.evidence.length<=24,`${n.id}.config.evidence must be Binding[] (at most 24); wrap a single binding in [binding], e.g. [{"ref":["nodes","upstream","message","content"]}]`);c.evidence.forEach(validateSource);}
+  case'INFER.REASONING.SAMPLE':case'INFER.REASONING.TRAJECTORY':text(c.instruction,'instruction',true);if(c.evidence!==undefined){check(Array.isArray(c.evidence)&&c.evidence.length<=24,`${n.id}.config.evidence must be Binding[] (at most 24); wrap a single binding in [binding], e.g. [{"ref":["nodes","upstream","message","content"]}]`,`${path}.config.evidence`,'Wrap one binding in an array: evidence:[binding].');c.evidence.forEach((s:any,i:number)=>atDefinitionPath(`${path}.config.evidence[${i}]`,()=>validateSource(s)));}
    if(n.type.endsWith('TRAJECTORY')){check(['cot','long-cot','tot','got','self-consistency'].includes(c.strategy),'Unknown reasoning strategy');if(c.options!==undefined){const allowed=c.strategy==='self-consistency'?['candidates']:c.strategy==='tot'?['breadth','depth','beamWidth']:c.strategy==='got'?['breadth','depth']:['rounds'];keys(c.options,allowed);for(const[k,v]of Object.entries(c.options))positive(v,k,c.strategy==='self-consistency'?7:8);}if(c.maxSteps!==undefined)positive(c.maxSteps,'maxSteps');}break;
   case'INFER.REASONING.REFLECT':view(c,'target','answer');check(['verify','critique','revise'].includes(c.mode),'Invalid reflection mode');check(Array.isArray(c.criteria)&&c.criteria.length>0&&c.criteria.length<=8,'Criteria required');c.criteria.forEach((x:any)=>text(x,'criterion'));if(c.feedback!==undefined){check(Array.isArray(c.feedback),`${n.id}.config.feedback must be an array of prior checker references, not instruction text; put prose in instruction, or omit feedback/use []`);c.feedback.forEach((s:any)=>{validateSource(s);if(s?.from)check(s.from==='node'&&s.view==='assessment','feedback must be a checker assessment');});}break;
   case'INFER.REASONING.DELIBERATE':check(['select','merge','consensus','debate'].includes(c.mode),'Invalid deliberation mode');check(Array.isArray(c.candidates)&&c.candidates.length>=2&&c.candidates.length<=8,'At least two candidates required');c.candidates.forEach((s:any)=>{validateSource(s);if(s?.from)check(s.from==='node'&&s.view==='answer','Candidates must be answer nodes');});break;
-  case'INTERACTION.ACT.TOOL':text(c.tool,'tool name');object(c.arguments);Object.values(c.arguments).forEach(validateSource);break;
+  case'INTERACTION.ACT.TOOL':text(c.tool,'tool name');object(c.arguments,`${path}.config.arguments`);Object.entries(c.arguments).forEach(([key,value])=>atDefinitionPath(`${path}.config.arguments.${key}`,()=>validateSource(value)));break;
   case'INTERACTION.OBSERVE':view(c,'result','external-result');break;
   case'INFER.CACHE.LOOKUP':case'INFER.CACHE.INVALIDATE':required(c,'key');break;
   case'INFER.CACHE.WRITE':required(c,'key');required(c,'value');if(c.ttlMs!==undefined)positive(c.ttlMs,'ttlMs');break;
@@ -113,7 +127,7 @@ export function validateDefinition(input:unknown):GraphDefinition{
  json(input);const d=structuredClone(input) as GraphDefinition;keys(d,['version','graphs','loop','output','tools','mutation']);check(d.version===1||d.version===2,'Unsupported definition version');
  check(Array.isArray(d.graphs)&&d.graphs.length>0&&d.graphs.length<=24,'Expected 1..24 Graphs');
  const graphIds=new Set<string>(),nodes=new Map<string,{node:DefinitionNode;graph:string}>();
- for(const g of d.graphs){keys(g,['id','nodes']);id(g.id);check(!graphIds.has(g.id),'Duplicate Graph');graphIds.add(g.id);check(Array.isArray(g.nodes)&&g.nodes.length>0,'Empty Graph');for(const n of g.nodes){validateNode(n);check(!nodes.has(n.id),'Node IDs must be unique across Graphs');nodes.set(n.id,{node:n,graph:g.id});}}
+ for(const[gi,g]of d.graphs.entries()){keys(g,['id','nodes'],`graphs[${gi}]`);id(g.id);check(!graphIds.has(g.id),'Duplicate Graph');graphIds.add(g.id);check(Array.isArray(g.nodes)&&g.nodes.length>0,'Empty Graph');for(const[ni,n]of g.nodes.entries()){const path=`graphs[${gi}].nodes[${ni}]`;atDefinitionPath(path,()=>validateNode(n,path));check(!nodes.has(n.id),'Node IDs must be unique across Graphs');nodes.set(n.id,{node:n,graph:g.id});}}
  check(nodes.size>=2&&nodes.size<=CODING_EXECUTION_POLICY.maxDeclaredNodes,'Expected 2..24 nodes');
  for(const g of d.graphs){for(const n of g.nodes)for(const dep of n.dependencies)check(nodes.get(dep)?.graph===g.id,'Dependencies are local; cross-Graph values use Sources/Loop');topologicalNodes(g);}
  keys(d.loop,['entryGraphId','maxGraphRuns','transitions','state','stateUpdates']);check(graphIds.has(d.loop.entryGraphId),'Unknown entry Graph');positive(d.loop.maxGraphRuns,'maxGraphRuns',d.version===1?12:Number.MAX_SAFE_INTEGER);object(d.loop.transitions);if(d.loop.state!==undefined)object(d.loop.state);
@@ -126,13 +140,21 @@ export function validateDefinition(input:unknown):GraphDefinition{
   for(const s of sources(value)){if(s.from!=='node'&&s.from!=='previous')continue;const p=nodes.get(s.nodeId);check(p,'Unknown source node');if(s.from==='node'){if(p!.graph===g){if(consumer)check(consumer.dependencies.includes(s.nodeId),'Local source must be a dependency');}else check(dom.get(g)!.has(p!.graph),'Cross-Graph source is not available on every incoming route');}const t=p!.node.type;check(s.view!=='answer'||t.startsWith('INFER.REASONING.'),'Answer view requires an Infer answer; tools are evidence');check(s.view!=='context'||t.startsWith('CONTEXT.'),'Context view requires a Context producer');check(s.view!=='assessment'||t==='INFER.REASONING.REFLECT','Assessment requires REFLECT');check(s.view!=='external-result'||t==='INTERACTION.ACT.TOOL','External result requires ACT.TOOL');check(!['memory-ids','memory-records'].includes(s.view)||t.startsWith('MEMORY.'),'Memory view requires Memory producer');check(s.view!=='cache'||t.startsWith('INFER.CACHE.'),'Cache view requires Cache producer');}
   for(const r of bindingReferences(value)){const p=nodes.get(r.nodeId);check(p,'Unknown native output source node');if(r.namespace==='nodes'&&!r.optional){if(p!.graph===g){if(consumer)check(consumer.dependencies.includes(r.nodeId),'Local native reference requires a dependency');}else check(dom.get(g)!.has(p!.graph),'Cross-Graph native source is not available on every incoming route');}if(r.namespace==='prior')check(r.optional,'prior references need a coalesce first-visit fallback');const roots=nativeRoots[p!.node.type];if(r.path.length&&roots)check(roots.includes(String(r.path[0])),`Unknown native output field ${String(r.path[0])} for ${p!.node.type}`);if(r.path[0]==='revisedResult'&&!r.optional)check(p!.node.config.mode==='revise','Optional revisedResult requires coalesce or a guarded route');}
  };
- for(const{node,graph}of nodes.values())references(node.config,graph,node);
+ for(const{node,graph}of nodes.values())atDefinitionPath(`graphs[${d.graphs.findIndex(g=>g.id===graph)}].nodes[${d.graphs.find(g=>g.id===graph)!.nodes.indexOf(node)}].config (node ${node.id})`,()=>references(node.config,graph,node));
  if(d.loop.stateUpdates!==undefined){object(d.loop.stateUpdates);for(const[g,patch]of Object.entries(d.loop.stateUpdates)){check(graphIds.has(g),'State update references unknown Graph');object(patch);for(const[k,value]of Object.entries(patch)){check(Object.hasOwn(d.loop.state??{},k),'State update requires a declared initial key');validateSource(value);references(value,g);}}}
  for(const g of d.graphs)for(const c of conditions(d.loop.transitions[g.id]!)){references(c.source??c.left,g.id);if(c.right!==undefined)references(c.right,g.id);}
  keys(d.output,['nodeId','view','answer']);const outputIds:string[]=[];
  if(Object.hasOwn(d.output,'answer')){check(d.version===2,'Native output binding requires version 2');check(d.output.nodeId===undefined&&d.output.view===undefined,'Choose answer binding OR nodeId/view');validateSource(d.output.answer);outputIds.push(...bindingReferences(d.output.answer).filter(r=>!r.optional).map(r=>r.nodeId),...sources(d.output.answer).filter(s=>s.from==='node').map(s=>(s as Extract<SemanticSource,{from:'node'}>).nodeId));for(const exit of exits)references(d.output.answer,exit.id);}
  else{check(d.output.view==='answer','Final output must be answer view');const output=nodes.get(d.output.nodeId!);check(output&&output.node.type.startsWith('INFER.REASONING.'),'Output must be an Infer node');outputIds.push(d.output.nodeId!);for(const exit of exits)check(dom.get(exit.id)!.has(output!.graph),'Output node may be skipped on an ending route');}
- if(d.tools!==undefined){check(Array.isArray(d.tools)&&d.tools.length<=6,'At most six tools');const names=new Set<string>();for(const t of d.tools){keys(t,['name','description','inputSchema','executeSource']);check((d.version===1?/^generated_[a-z][\w-]{0,55}$/:/^[a-z][a-z0-9_-]{0,63}$/).test(t.name)&&!names.has(t.name),'Invalid/duplicate generated tool name');names.add(t.name);text(t.description,'tool description');check(record(t.inputSchema),`${t.name}.inputSchema is required and must be a JSON object schema, e.g. {"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`);check(t.inputSchema.type==='object','Tool inputSchema must be an object schema');text(t.executeSource,'tool source');validateModuleSyntax(`export const execute=(${t.executeSource});`);const fn:any=parseExpressionAt(t.executeSource,0,{ecmaVersion:'latest'});check(['FunctionExpression','ArrowFunctionExpression'].includes(fn.type)&&!fn.async&&!fn.generator,'Generated tool must be a synchronous pure function');}}
+ if(d.tools!==undefined){check(Array.isArray(d.tools)&&d.tools.length<=6,'At most six tools','tools');const names=new Set<string>();for(const[i,t]of d.tools.entries())atDefinitionPath(`tools[${i}]`,()=>{
+  const path=`tools[${i}]`;keys(t,['name','description','inputSchema','executeSource'],path);
+  check((d.version===1?/^generated_[a-z][\w-]{0,55}$/:/^[a-z][a-z0-9_-]{0,63}$/).test(t.name)&&!names.has(t.name),'Invalid/duplicate generated tool name',`${path}.name`);names.add(t.name);text(t.description,'tool description');
+  check(record(t.inputSchema),`${t.name}.inputSchema is required and must be a JSON object schema; received ${kind(t.inputSchema)}`,`${path}.inputSchema`,'Add inputSchema:{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}; use the actual argument names/types consumed by this tool.');
+  check(t.inputSchema.type==='object','Tool inputSchema must be an object schema',`${path}.inputSchema.type`,'Set inputSchema.type to "object".');
+  if(t.inputSchema.properties!==undefined)object(t.inputSchema.properties,`${path}.inputSchema.properties`);
+  if(t.inputSchema.required!==undefined)check(Array.isArray(t.inputSchema.required)&&t.inputSchema.required.every((key:any)=>typeof key==='string'&&Object.hasOwn(t.inputSchema.properties??{},key)),'required must list declared property names',`${path}.inputSchema.required`,'Declare each required argument in properties and list its name in required.');
+  atDefinitionPath(`${path}.executeSource`,()=>{text(t.executeSource,'tool source');validateModuleSyntax(`export const execute=(${t.executeSource});`);const fn:any=parseExpressionAt(t.executeSource,0,{ecmaVersion:'latest'});check(['FunctionExpression','ArrowFunctionExpression'].includes(fn.type)&&!fn.async&&!fn.generator,'Generated tool must be a synchronous pure function');});
+ });}
  const builtins=['bounded_arithmetic','literal_text_find'];const available=new Set([...builtins,...(d.tools??[]).map(t=>t.name)]);check(!(d.tools??[]).some(t=>builtins.includes(t.name)),'Cannot redefine a host tool');for(const{node}of nodes.values())if(node.type==='INTERACTION.ACT.TOOL')check(available.has(node.config.tool),'Tool is not registered');
  const refs=(v:any):string[]=>[...sources(v).filter(s=>s.from==='node'||s.from==='previous').map(s=>(s as Extract<SemanticSource,{from:'node'}>).nodeId),...bindingReferences(v).map(r=>r.nodeId)];
  // State writers are genuine consumers even when a later lookup connects through a key,

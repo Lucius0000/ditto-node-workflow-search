@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import type { DatasetName } from "../domain.js";
+import {DROP_ANSWER_CONTRACT,DROP_ANSWER_CONTRACT_VERSION,publicAnswerContract} from './answer-contract.js';
 
-/** Frozen baseline source; prompts are public task instructions, never labels. */
+/** Original seed provenance; DROP's revised user answer contract is versioned separately. */
 export const MFLOW_PROMPT_SOURCE = Object.freeze({
   repository: "https://github.com/erwinmsmith/MFlow",
   commit: "9279d7d91bbce039656f5cd3a6bb539cea75fe85",
@@ -31,11 +32,11 @@ Problem and Initial Solution:`,
 Problem:`,
 });
 
-const dropContract = "Answer the question using only the supplied passage and question. Return only the concise final answer; multiple answer spans may be separated with |. Do not include a derivation, Markdown or a boxed answer.";
+const dropContract = DROP_ANSWER_CONTRACT;
 const dropPrompts: BaselinePrompts = Object.freeze({
-  agent: `Solve the original task accurately. ${dropContract}\n\nTask:`,
-  review: `Review the supplied candidate against the ORIGINAL task. Correct concrete implementation, reasoning or interpretation errors. If it is correct, restate it unchanged. ${dropContract}\n\nTask and candidate:`,
-  integrate: `Resolve disagreements by checking the original specification and the supplied candidates. Produce one correct solution, rather than voting on wording. ${dropContract}\n\nTask:`,
+  agent: 'Solve the original task accurately. Follow the public final-answer contract below.\n\nTask:',
+  review: 'Review the supplied candidate against the ORIGINAL task. Correct concrete implementation, reasoning or interpretation errors. If it is correct, restate it unchanged. Follow the public final-answer contract below.\n\nTask and candidate:',
+  integrate: 'Resolve disagreements by checking the original specification and the supplied candidates. Produce one correct solution, rather than voting on wording. Follow the public final-answer contract below.\n\nTask:',
 });
 
 const gsm8kRootProfile = Object.freeze({
@@ -60,7 +61,7 @@ export function baselinePrompts(dataset: DatasetName): BaselinePrompts | undefin
   return dataset === "gsm8k" ? gsm8kPrompts : dataset === "drop" ? dropPrompts : undefined;
 }
 
-/** Reproduce composition.ts textMessages for the initial root, without adapter suffixes. */
+/** Preserve original task text; DROP uses its versioned public final/intermediate contract. */
 export function baselineTextMessages(
   dataset: "drop" | "gsm8k",
   instruction: string,
@@ -75,13 +76,14 @@ export function baselineTextMessages(
 
 const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const promptProfiles = Object.freeze(Object.fromEntries((["drop", "gsm8k"] as const).map(dataset => [dataset, Object.freeze({
-  id: "mflow-seed-root-text-v1",
+  id: dataset==='drop'?DROP_ANSWER_CONTRACT_VERSION:"mflow-seed-root-text-v1",
   dataset,
   source: MFLOW_PROMPT_SOURCE,
+  ...(dataset==='drop'?{userAnswerContract:publicAnswerContract(dataset)}:{}),
   prompts: baselinePrompts(dataset)!,
   promptsSha256: digest(baselinePrompts(dataset)),
   rootMessageSha256: digest(baselineTextMessages(dataset, baselinePrompts(dataset)!.agent, "<PUBLIC_TASK_PROMPT>")),
-  scope: "Baseline seed prompts and initial root message; Ditto Node search remains the experiment variable.",
+  scope: dataset==='drop'?"Versioned DROP user answer contract; original task text, split and scorer remain fixed.":"Baseline seed prompts and initial root message; Ditto Node search remains the experiment variable.",
 })])));
 
 /** Save this public contract in manifests/checkpoints so prompt changes cannot resume silently. */
@@ -92,6 +94,6 @@ export function baselinePromptProfile(dataset: DatasetName): Readonly<Record<str
 export function assertBaselinePromptProfile(dataset: DatasetName, actual: unknown): void {
   const expected = baselinePromptProfile(dataset);
   if (expected && JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(`Frozen ${dataset} baseline prompt profile does not match the pinned MFlow contract`);
+    throw new Error(`Frozen ${dataset} baseline prompt profile does not match the versioned public prompt contract`);
   }
 }
