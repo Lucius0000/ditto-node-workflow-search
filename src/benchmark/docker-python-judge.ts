@@ -147,7 +147,7 @@ function runDocker(
 
     const stop = (error: Error): void => {
       if (failure) return;
-      failure = error;
+      failure = Object.assign(error, { programStarted: stdout.startsWith(`${startedMarker}\n`) });
       child.kill("SIGKILL");
       void removeContainer(containerName);
     };
