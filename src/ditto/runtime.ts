@@ -15,6 +15,7 @@ import type { ProviderSettings } from "../config.js";
 import { PythonTransport } from "./python-transport.js";
 import { withRequestTimeBudget, type TimeBudgetPolicy } from "../execution/time-budget.js";
 import { observeCapabilityWorkers } from "../workflow/capability-observer.js";
+import {automationBudgetScope} from '../execution/automation-budget.js';
 
 export interface ExperimentRuntime {
   readonly reflectionEvent?: (event: ReflectionRepairEvent) => void | Promise<void>;
@@ -95,10 +96,10 @@ export function createExperimentRuntime(settings: ProviderSettings, options: Exp
 
 /** Admission occurs after the concurrency queue; every nested native/repair call is charged. */
 export function withProviderLifecycle(provider: ModelProvider, hooks: Pick<ExperimentRuntimeOptions, "beforeProviderCall" | "afterProviderCall">): ModelProvider {
-  if (!hooks.beforeProviderCall && !hooks.afterProviderCall) return provider;
   return {
     async invoke(input, options) {
       options.signal.throwIfAborted();
+      automationBudgetScope.getStore()?.claimActor();
       await hooks.beforeProviderCall?.(input);
       const parent = currentProviderDiagnostics();
       return captureProviderDiagnostics(async diagnostics => {
@@ -115,6 +116,7 @@ export function withProviderLifecycle(provider: ModelProvider, hooks: Pick<Exper
     ...(provider.stream ? {
       async *stream(input: SampleInput, options: { signal: AbortSignal }) {
         options.signal.throwIfAborted();
+        automationBudgetScope.getStore()?.claimActor();
         await hooks.beforeProviderCall?.(input);
         const parent = currentProviderDiagnostics();
         const diagnostics: ProviderCallDiagnostics[] = [];
@@ -144,6 +146,10 @@ export function withProviderLifecycle(provider: ModelProvider, hooks: Pick<Exper
 
 /** Enforce the same policy across SAMPLE, TRAJECTORY, optimizer and stream calls. */
 export function applyModelProfile(provider: ModelProvider, _profile: ExperimentModelProfile): ModelProvider {
+  const check = (output: SampleOutput): SampleOutput => {
+    if(output.finishReason==='error')throw Object.assign(new Error('Provider generation failed (finish_reason=error)'),{code:'PROVIDER_GENERATION_ERROR',infrastructureFailure:true});
+    return output;
+  };
   function configure(input: Parameters<ModelProvider["invoke"]>[0]): Parameters<ModelProvider["invoke"]>[0] {
     const providerOptions: Record<string, unknown> = { ...input.model.providerOptions, ...EXPERIMENT_PROVIDER_OPTIONS };
     delete providerOptions.top_p;
@@ -152,8 +158,8 @@ export function applyModelProfile(provider: ModelProvider, _profile: ExperimentM
     return { ...input, generation: { ...EXPERIMENT_GENERATION }, model: { ...input.model, providerOptions } };
   }
   return {
-    invoke: (input, options) => provider.invoke(configure(input), options),
-    ...(provider.stream ? { stream: (input, options) => provider.stream!(configure(input), options) } satisfies Pick<ModelProvider, "stream"> : {}),
+    invoke: async (input, options) => check(await provider.invoke(configure(input), options)),
+    ...(provider.stream ? { async *stream(input, options) {for await(const event of provider.stream!(configure(input),options)){if(event.type==='result')check(event.output);yield event;}} } satisfies Pick<ModelProvider, "stream"> : {}),
   };
 }
 

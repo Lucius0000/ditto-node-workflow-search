@@ -1,15 +1,18 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { CodeJudge, CodeJudgeRequest, CodeJudgeResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
-const PASS_MARKER = "__DITTO_PRIVATE_TESTS_PASSED__";
+class CandidateOutputLimit extends Error {}
 
 export interface DockerPythonJudgeOptions {
   /** Must be reviewed and pre-pulled; the judge never pulls during evaluation. */
   readonly image?: string;
   readonly timeoutMs?: number;
+  /** Generated-program deadline inside the container; excludes Docker startup. */
+  readonly programTimeoutMs?: number;
   readonly memory?: string;
   readonly cpus?: number;
   readonly pidsLimit?: number;
@@ -24,6 +27,7 @@ export interface DockerPythonJudgeOptions {
 export class DockerPythonJudge implements CodeJudge {
   private readonly image: string;
   private readonly timeoutMs: number;
+  private readonly programTimeoutMs: number;
   private readonly memory: string;
   private readonly cpus: number;
   private readonly pidsLimit: number;
@@ -31,7 +35,9 @@ export class DockerPythonJudge implements CodeJudge {
 
   constructor(options: DockerPythonJudgeOptions = {}) {
     this.image = options.image ?? process.env.CODE_JUDGE_IMAGE ?? "python:3.13-slim";
-    this.timeoutMs = options.timeoutMs ?? 12_000;
+    this.timeoutMs = options.timeoutMs ?? 60_000;
+    this.programTimeoutMs = options.programTimeoutMs ?? 12_000;
+    if (![this.timeoutMs, this.programTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647)) throw new Error("Invalid Python judge deadline");
     this.memory = options.memory ?? "256m";
     this.cpus = options.cpus ?? 1;
     this.pidsLimit = options.pidsLimit ?? 64;
@@ -61,9 +67,24 @@ export class DockerPythonJudge implements CodeJudge {
     signal?.throwIfAborted();
     const started = Date.now();
     const name = `ditto-python-${randomUUID()}`;
-    const script = buildHarness(request);
+    const passMarker = `DITTO_PASS_${randomUUID()}`;
+    const startedMarker = `DITTO_STARTED_${randomUUID()}`;
+    const script = buildHarness(request, passMarker);
+    // A trusted parent supervises only the generated Python process. The host
+    // watchdog remains an infrastructure error, even after startup succeeds.
+    const supervisor = [
+      "import subprocess, sys",
+      "source = sys.stdin.read()",
+      `print(${JSON.stringify(startedMarker)}, flush=True)`,
+      "try:",
+      `    result = subprocess.run([sys.executable, '-I', '-B', '-'], input=source.encode('utf-8'), timeout=${this.programTimeoutMs / 1000})`,
+      "    sys.exit(0 if result.returncode == 0 else 1)",
+      "except subprocess.TimeoutExpired:",
+      "    print('Python program deadline exhausted', file=sys.stderr, flush=True)",
+      "    sys.exit(124)",
+    ].join("\n");
     const args = [
-      "run", "--rm", "--pull=never", "--name", name,
+      "run", "--rm", "--init", "--pull=never", "--name", name,
       "--network", "none",
       "--read-only",
       "--cap-drop", "ALL",
@@ -80,20 +101,23 @@ export class DockerPythonJudge implements CodeJudge {
       "--env", "HOME=/tmp",
       "--stop-timeout", "1",
       "-i", this.image,
-      "python", "-I", "-B", "-",
+      "python", "-I", "-B", "-c", supervisor,
     ];
 
     try {
-      const execution = await runDocker(args, script, name, this.timeoutMs, this.outputLimitBytes, signal);
-      if (execution.exitCode === 125 || /(?:failed to connect|cannot connect|error response from daemon|unable to find image|docker daemon)/i.test(execution.stderr)) {
+      const execution = await runDocker(args, script, name, startedMarker, this.timeoutMs, this.outputLimitBytes, signal);
+      if (!execution.stdout.startsWith(`${startedMarker}\n`) || [125, 126, 127].includes(execution.exitCode)) {
         throw new Error(`Docker judge infrastructure failed: ${compactDiagnostics(execution.stdout, execution.stderr, false)}`);
       }
-      const passed = execution.exitCode === 0 && execution.stdout.split(/\r?\n/).includes(PASS_MARKER);
+      const passed = execution.exitCode === 0 && execution.stdout.trimEnd().endsWith(passMarker);
       return Object.freeze({
         passed,
-        diagnostics: compactDiagnostics(execution.stdout, execution.stderr, passed),
+        diagnostics: `exit=${execution.exitCode}; ${compactDiagnostics(execution.stdout.replace(`${startedMarker}\n`, "").replace(passMarker, ""), execution.stderr, passed)}`,
         durationMs: Date.now() - started,
       });
+    } catch (error) {
+      if (error instanceof CandidateOutputLimit) return Object.freeze({ passed: false, diagnostics: error.message, durationMs: Date.now() - started });
+      throw error;
     } finally {
       await removeContainer(name);
     }
@@ -110,6 +134,7 @@ function runDocker(
   args: readonly string[],
   stdin: string,
   containerName: string,
+  startedMarker: string,
   timeoutMs: number,
   outputLimitBytes: number,
   signal?: AbortSignal,
@@ -123,22 +148,22 @@ function runDocker(
 
     const stop = (error: Error): void => {
       if (failure) return;
-      failure = error;
+      failure = Object.assign(error, { programStarted: stdout.startsWith(`${startedMarker}\n`) });
       child.kill("SIGKILL");
       void removeContainer(containerName);
     };
-    const cancel = (): void => stop(new Error("Python evaluation cancelled"));
-    const timer = setTimeout(() => stop(new Error(`Python evaluation timed out after ${timeoutMs}ms`)), timeoutMs);
+    const cancel = (): void => stop(signal?.reason instanceof Error ? signal.reason : new Error("Python evaluation cancelled"));
+    const timer = setTimeout(() => stop(new Error(`Docker judge host supervision timed out after ${timeoutMs}ms`)), timeoutMs);
     signal?.addEventListener("abort", cancel, { once: true });
     if (signal?.aborted) cancel();
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
-      if (Buffer.byteLength(stdout) > outputLimitBytes) stop(new Error("Python stdout exceeded its limit"));
+      if (Buffer.byteLength(stdout) > outputLimitBytes) stop(stdout.startsWith(`${startedMarker}\n`) ? new CandidateOutputLimit("Python stdout exceeded its limit") : new Error("Docker judge startup stdout exceeded its limit"));
     });
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
-      if (Buffer.byteLength(stderr) > outputLimitBytes) stop(new Error("Python stderr exceeded its limit"));
+      if (Buffer.byteLength(stderr) > outputLimitBytes) stop(stdout.startsWith(`${startedMarker}\n`) ? new CandidateOutputLimit("Python stderr exceeded its limit") : new Error("Docker judge startup stderr exceeded its limit"));
     });
     child.once("error", (error) => finish(() => reject(new Error(`Unable to start Docker: ${error.message}`, { cause: error }))));
     child.once("close", (code) => finish(() => failure ? reject(failure) : resolve({ exitCode: code ?? 125, stdout, stderr })));
@@ -168,7 +193,7 @@ function dockerClientEnvironment(): NodeJS.ProcessEnv {
   return Object.fromEntries(allowed.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]!]]));
 }
 
-function buildHarness(request: CodeJudgeRequest): string {
+function buildHarness(request: CodeJudgeRequest, passMarker: string): string {
   const imports = request.testImports.join("\n");
   const invocation = request.dataset === "humaneval" ? `check(${request.entryPoint})` : "check()";
   return [
@@ -180,7 +205,7 @@ function buildHarness(request: CodeJudgeRequest): string {
     request.testSource,
     `assert callable(${request.entryPoint}), ${JSON.stringify(`Entry point ${request.entryPoint} is not callable`)}`,
     invocation,
-    `print(${JSON.stringify(PASS_MARKER)})`,
+    `print(${JSON.stringify(passMarker)})`,
     "",
   ].filter(Boolean).join("\n\n");
 }
@@ -198,17 +223,32 @@ function humanEvalSupport(dataset: "humaneval" | "mbpp", entryPoint: string): st
 }
 
 function compactDiagnostics(stdout: string, stderr: string, passed: boolean): string {
-  const cleanedOut = stdout.split(/\r?\n/).filter((line) => line !== PASS_MARKER).join("\n").trim();
+  const cleanedOut = stdout.trim();
   const combined = [cleanedOut, stderr.trim()].filter(Boolean).join("\n");
   if (!combined) return passed ? "private tests passed" : "private tests failed without diagnostics";
   return combined.slice(-4_000);
 }
 
 export function extractPythonCandidate(modelOutput: string, publicPrompt: string, entryPoint: string): string {
-  const fences = [...modelOutput.matchAll(/```(?:python|py)?\s*\r?\n([\s\S]*?)```/gi)].map((match) => match[1]!.trim());
-  const fencedWithEntry = fences.find((candidate) => containsEntryPoint(candidate, entryPoint));
-  const extracted = fencedWithEntry ?? fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
-  if (containsEntryPoint(extracted, entryPoint)) return extracted;
+  const fences = [...modelOutput.matchAll(/```(?:python|py)?[^\S\r\n]*\r?\n([\s\S]*?)```/gi)].map((match) => match[1]!.trimEnd());
+  const classifications = fences.length > 1 ? supportingPythonBlocks(fences) : [];
+  const firstEntryIndex = fences.findIndex((candidate) => containsEntryPoint(candidate, entryPoint));
+  const implementationIndex = fences.findIndex((candidate, index) => containsEntryPoint(candidate, entryPoint) && !classifications[index]?.signatureOnly);
+  const entryIndex = implementationIndex >= 0 ? implementationIndex : firstEntryIndex;
+  const fencedWithEntry = fences[entryIndex];
+  // Keep the first complete entry-point block unchanged. Other fences may be
+  // REPL transcripts, prose, tests or partial usage snippets, rather than code
+  // belonging to the solution. Parse only their public syntax; never run them.
+  const extracted = fencedWithEntry ? fences.filter((block, index) => index === entryIndex ||
+    (!containsEntryPoint(block, entryPoint) && classifications[index]?.support)).join("\n\n")
+    : fences.sort((left, right) => right.length - left.length)[0] ?? stripPlainLanguagePrefix(modelOutput);
+  if (containsEntryPoint(extracted, entryPoint)) {
+    // Public imports and helpers precede HumanEval's incomplete entry point.
+    const escaped = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const signature = new RegExp(`^(?:async\\s+)?def\\s+${escaped}\\s*\\(`, "m").exec(publicPrompt);
+    const preamble = signature ? publicPrompt.slice(0, signature.index).trimEnd() : "";
+    return preamble && !extracted.startsWith(preamble) ? `${preamble}\n\n${extracted}` : extracted;
+  }
   const lines = extracted.split(/\r?\n/);
   const indents = lines.filter((line) => line.trim()).map((line) => line.match(/^\s*/)![0].length);
   const commonIndent = indents.length ? Math.min(...indents) : 0;
@@ -216,13 +256,26 @@ export function extractPythonCandidate(modelOutput: string, publicPrompt: string
   return `${publicPrompt.trimEnd()}\n${body}`;
 }
 
+function supportingPythonBlocks(blocks: readonly string[]): { support: boolean; signatureOnly: boolean }[] {
+  const python = process.env.DITTO_PROVIDER_PYTHON?.trim() || "python";
+  const script = fileURLToPath(new URL("../../scripts/python_support_blocks.py", import.meta.url));
+  const result: unknown = JSON.parse(execFileSync(python, ["-I", "-B", "-X", "utf8", script], {
+    input: JSON.stringify(blocks), encoding: "utf8", timeout: 5_000, maxBuffer: 1024 * 1024, windowsHide: true,
+  }));
+  if (!Array.isArray(result) || result.length !== blocks.length || result.some(value =>
+    !value || typeof value.support !== "boolean" || typeof value.signatureOnly !== "boolean")) {
+    throw new Error("Invalid Python support-block syntax classification");
+  }
+  return result;
+}
+
 function stripPlainLanguagePrefix(output: string): string {
-  const lines = output.trim().split(/\r?\n/);
+  const lines = output.replace(/^\s*\r?\n/, "").trimEnd().split(/\r?\n/);
   const firstCodeLine = lines.findIndex((line) => /^\s*(?:@|from\s+\S+\s+import\s+|import\s+|(?:async\s+)?def\s+|class\s+)/.test(line));
-  return (firstCodeLine < 0 ? lines : lines.slice(firstCodeLine)).join("\n").trim();
+  return (firstCodeLine < 0 ? lines : lines.slice(firstCodeLine)).join("\n").trimEnd();
 }
 
 function containsEntryPoint(source: string, entryPoint: string): boolean {
   const escaped = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:async\\s+)?def\\s+${escaped}\\s*\\(`).test(source);
+  return new RegExp(`^[ \\t]*(?:async\\s+)?def\\s+${escaped}\\s*\\(`, "m").test(source);
 }

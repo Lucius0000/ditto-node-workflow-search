@@ -2,6 +2,10 @@ import type { AgentRunResult, BenchmarkTask, CaseResult, EvaluationSummary } fro
 import type { BenchmarkEvaluationOptions, BenchmarkRunner, PrivateScorer } from "./types.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { TimeBudgetExceeded, currentTimeBudgetSignal, recordTimeBudgetInfrastructureFailure, throwIfTimeBudgetExceeded, validateTimeBudget, withWorkflowTimeBudget, type TimeBudgetPolicy } from "../execution/time-budget.js";
+import {AutomationBudget,automationBudgetScope} from '../execution/automation-budget.js';
+import {AsyncLocalStorage} from 'node:async_hooks';
+const caseContexts=new AsyncLocalStorage<string>();
+export const currentEvaluationCaseId=():string|undefined=>caseContexts.getStore();
 
 export async function evaluateTasks(
   tasks: readonly BenchmarkTask[],
@@ -26,7 +30,7 @@ export async function evaluateTasks(
     const current = await mapLimit(tasks, concurrency, async (task) => {
       const prior = options.priorCases?.find(value => value.caseId === `${task.id}#${repeat + 1}`);
       const result = prior?.valid === true && prior.error === undefined
-        ? prior : await evaluateOne(task, repeat, scorer, runner, retryAttempts, prior, options.timeBudget);
+        ? prior : await caseContexts.run(`${task.id}#${repeat+1}`,()=>evaluateBudgetedOne(task, repeat, scorer, runner, retryAttempts, prior, options));
       completed++;
       await options.onCase?.({ completed, total, result });
       return result;
@@ -61,6 +65,21 @@ export async function evaluateTasks(
   });
 }
 
+async function evaluateBudgetedOne(task:BenchmarkTask,repeat:number,scorer:PrivateScorer,runner:BenchmarkRunner,retries:number,prior:CaseResult|undefined,options:BenchmarkEvaluationOptions):Promise<CaseResult>{
+  if(task.dataset!=='automationbench'||!options.automationBudget)return evaluateOne(task,repeat,scorer,runner,retries,prior,options.timeBudget,options.cumulativeRetries);
+  const caseId=`${task.id}#${repeat+1}`,saved=options.automationBudgetPersistence?.load(caseId),previous=prior?.automationBudgetProgress;
+  if(saved&&previous&&(saved.startedAt!==previous.startedAt||saved.actorCalls<previous.actorCalls||saved.attempts<previous.attempts))throw Error('Automation write-ahead budget regressed behind its case record');
+  const budget=new AutomationBudget(options.automationBudget,saved??previous,options.automationBudgetPersistence?value=>options.automationBudgetPersistence!.save(caseId,value):undefined);
+  const guarded:BenchmarkRunner=async publicTask=>{
+    if(saved&&!prior)throw Error('Interrupted Automation attempt has no result evidence; automatic regeneration is refused');
+    if(prior?.error&&prior.failureKind!=='judge'&&(budget.remainingMs===0||budget.progress().actorCalls>=options.automationBudget!.maxActorCalls))throw Error('Unresolved Automation infrastructure fault with exhausted case budget');
+    budget.claimAttempt(retries);return runner(publicTask);
+  };
+  const policy=options.timeBudget?{...options.timeBudget,workflowMs:Math.max(1,Math.min(options.timeBudget.workflowMs??Infinity,budget.remainingMs))}:undefined;
+  const result=await automationBudgetScope.run(budget,()=>evaluateOne(task,repeat,scorer,guarded,retries,prior,policy,true));
+  return {...result,automationBudgetProgress:budget.progress()};
+}
+
 async function evaluateOne(
   task: BenchmarkTask,
   repeat: number,
@@ -69,13 +88,19 @@ async function evaluateOne(
   retryAttempts: number,
   prior?: CaseResult,
   timeBudget?: TimeBudgetPolicy,
+  cumulativeRetries = false,
 ): Promise<CaseResult> {
   const started = Date.now();
   const attempts: NonNullable<CaseResult["attempts"]>[number][] = [...(prior?.attempts ?? [])];
   const history = prior ? { previousResults: Object.freeze([prior]) } : {};
   let run: AgentRunResult;
   try {
-    run = await withWorkflowTimeBudget(timeBudget, () => retryWorkflow(() => runner(task), retryAttempts, attempts));
+    if (prior?.failureKind === "judge" && scorer.recoveryData) {
+      if (prior.judgeRecovery === undefined) throw new Error("Judge-only recovery requires the saved world; regeneration is refused");
+      run = { answer: prior.prediction, executedNodeIds: [], executedGraphIds: [], inputTokens: 0, outputTokens: 0, totalTokens: 0, usageKnown: true };
+    } else {
+      run = await withWorkflowTimeBudget(timeBudget, () => retryWorkflow(() => runner(task), cumulativeRetries ? Math.max(0, retryAttempts - attempts.length) : retryAttempts, attempts));
+    }
   } catch (error) {
     if (error instanceof TimeBudgetExceeded) {
       return Object.freeze({
@@ -112,7 +137,7 @@ async function evaluateOne(
   const providerUsage = aggregateUsage(run, attempts, prior);
   let evidence;
   try {
-    evidence = await scorer.score(task.id, run.answer);
+    evidence = await scorer.score(task.id, run.answer, prior);
     if (!Number.isFinite(evidence.score) || evidence.score < 0 || evidence.score > 1) {
       throw new Error(`Scorer returned invalid score: ${evidence.score}`);
     }
@@ -123,6 +148,7 @@ async function evaluateOne(
       score: 0, expected: expectedLabel(scorer, task.id), prediction: run.answer,
       normalizedExpected: "", normalizedPrediction: "", method: "judge-error",
       failureKind: "judge", error: error instanceof Error ? error.message : String(error),
+      ...(scorer.recoveryData ? { judgeRecovery: scorer.recoveryData(task.id) ?? prior?.judgeRecovery } : {}),
       attempts: Object.freeze(attempts), usageKnown: run.usageKnown !== false && prior?.usageKnown !== false && attempts.every(value => value.usageKnown),
       ...providerUsage,
       ...(run.checkerAudits?.length ? { checkerAudits: run.checkerAudits } : {}),
@@ -137,6 +163,7 @@ async function evaluateOne(
     ...providerUsage,
     attempts: Object.freeze(attempts),
     ...evidence,
+    ...(run.executionBudget?{executionBudget:run.executionBudget,score:0}:{}),
     ...(run.candidateFailure?{candidateFailure:run.candidateFailure}:{}),
     ...(run.generationOutcomes?.length ? { generationOutcomes: run.generationOutcomes } : {}),
     ...(run.checkerAudits?.length ? { checkerAudits: run.checkerAudits } : {}),
@@ -146,6 +173,7 @@ async function evaluateOne(
 
 /** Retry only transient failures; preserve failed-attempt evidence and usage completeness. */
 async function retryWorkflow<T>(operation: () => Promise<T>, attempts: number, failures: NonNullable<CaseResult["attempts"]>[number][]): Promise<T> {
+  if (attempts === 0) throw new Error(`Workflow attempt budget exhausted; no new workflow dispatched. Previous failure: ${failures.at(-1)?.error ?? 'unavailable'}`);
   const previousAttempts = failures.length;
   let latest: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -197,14 +225,14 @@ function aggregateUsage(run: Partial<Usage> | undefined, attempts: NonNullable<C
 
 function classifyFailure(message: string): NonNullable<CaseResult["failureKind"]> {
   if (/(?:\[TIMEOUT\]|deadline exceeded|timed out|ETIMEDOUT|HTTP 504)/i.test(message)) return "timeout";
-  if (/(?:\[PROVIDER_OUTPUT_TRUNCATED\]|HTTP \d{3}|ECONNRESET|fetch failed|unauthorized|insufficient.*(?:balance|quota)|authentication)/i.test(message)) return "provider";
+  if (/(?:\[PROVIDER_OUTPUT_TRUNCATED\]|Provider generation failed|HTTP \d{3}|ECONNRESET|fetch failed|unauthorized|insufficient.*(?:balance|quota)|authentication)/i.test(message)) return "provider";
   if (/(?:private tests|Docker judge|Python evaluation)/i.test(message)) return "judge";
   return "execution";
 }
 
 function isTransient(message: string): boolean {
   if (/(?:HTTP (?:400|401|402|403|404|405|422)|authentication|unauthorized|insufficient.*(?:balance|quota)|invalid.*(?:parameter|api.?key))/i.test(message)) return false;
-  return /(?:\[TIMEOUT\]|deadline exceeded|timed out|ETIMEDOUT|HTTP (?:408|409|425|429|5\d\d)|ECONNRESET|fetch failed)/i.test(message);
+  return /(?:\[TIMEOUT\]|Provider generation failed|deadline exceeded|timed out|ETIMEDOUT|HTTP (?:408|409|425|429|5\d\d)|ECONNRESET|fetch failed)/i.test(message);
 }
 
 function expectedLabel(scorer: PrivateScorer, taskId: string): string {

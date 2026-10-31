@@ -27,10 +27,10 @@ test("fixed split verifier binds content, ordering, line endings, and count", ()
 test("every formal adapter rejects limit/sampling before loading data", async () => {
   for (const dataset of DATASETS) {
     for (const split of ["validate", "test"] as const) {
-      for (const limit of [1, fixedSplitLock(dataset, split).count]) {
+      for (const limit of [1, dataset === 'automationbench' ? 200 : fixedSplitLock(dataset, split).count]) {
         await assert.rejects(
           loadBenchmark(dataset, { dataDir: "nonexistent-dataset-directory", split, limit }),
-          /complete fixed split.*sampling is forbidden/,
+          /complete (?:fixed|pinned) split.*sampling/,
         );
       }
     }
@@ -80,7 +80,7 @@ test("all adapters preserve MFlow public prompts and IDs while keeping reference
     humaneval: "humaneval:HumanEval/8", mbpp: "mbpp:8",
   };
   try {
-    for (const dataset of DATASETS) {
+    for (const dataset of DATASETS.filter((dataset): dataset is Exclude<typeof dataset, 'automationbench'> => dataset !== 'automationbench')) {
       await writeFile(join(directory, `${dataset}_test.jsonl`), JSON.stringify(fixtures[dataset]) + "\n");
       await assert.rejects(loadBenchmark(dataset, { dataDir: directory, split: "test" }), /SHA-256 mismatch/);
       const loaded = await loadBenchmark(dataset, { dataDir: directory, split: "test", dataMode: "fixture" });
