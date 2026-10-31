@@ -79,7 +79,7 @@ export function validateSource(v:any):void{
 const fields:Record<NodeType,string[]>={
  'CONTEXT.LOAD':['sources'],'CONTEXT.SELECT':['context','query','limit','maxTokens'],'CONTEXT.UPDATE':['context','add','removeIds'],'CONTEXT.COMPRESS':['context','maxItems','maxTokens'],
  'MEMORY.WRITE':['content'],'MEMORY.GET':['ids'],'MEMORY.SEARCH':['query','limit'],'MEMORY.QUERY':['filter','limit'],'MEMORY.UPDATE':['ids','content'],'MEMORY.DELETE':['ids'],
- 'INFER.REASONING.SAMPLE':['instruction','user','evidence','outputFormat'],'INFER.REASONING.TRAJECTORY':['instruction','user','evidence','strategy','options','maxSteps','outputFormat'],
+ 'INFER.REASONING.SAMPLE':['instruction','user','evidence','outputFormat','firstUser'],'INFER.REASONING.TRAJECTORY':['instruction','user','evidence','strategy','options','maxSteps','outputFormat'],
  'INFER.REASONING.REFLECT':['target','mode','criteria','feedback','instruction','user'],'INFER.REASONING.DELIBERATE':['candidates','mode','instruction','user'],
  'INFER.CACHE.LOOKUP':['key'],'INFER.CACHE.WRITE':['key','value','ttlMs'],'INFER.CACHE.INVALIDATE':['key'],
  'INTERACTION.ACT.TOOL':['tool','arguments'],'INTERACTION.OBSERVE':['result'],'RETRIEVAL.SEARCH':['query','target','limit']};
@@ -89,6 +89,7 @@ function validateNode(n:DefinitionNode,path:string):void{
  keys(n,['id','type','dependencies','config'],path);id(n.id);check(NODE_TYPES.includes(n.type),'Unsupported Ditto node type');
  check(Array.isArray(n.dependencies)&&n.dependencies.every(d=>typeof d==='string')&&new Set(n.dependencies).size===n.dependencies.length,'Invalid dependencies');
  const c=n.config;keys(c,fields[n.type],`${path}.config`);
+ if(c.firstUser!==undefined)validateSource(c.firstUser);
  if(c.instruction!==undefined)text(c.instruction,'instruction',true);if(c.user!==undefined)validateSource(c.user);if(c.outputFormat!==undefined)check(['text','json'].includes(c.outputFormat),'outputFormat must be text or json');
  switch(n.type){
   case'CONTEXT.LOAD':check(Array.isArray(c.sources)&&c.sources.length>0&&c.sources.length<=64,'LOAD sources required');c.sources.forEach(validateSource);break;

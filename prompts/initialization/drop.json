@@ -1,0 +1,65 @@
+{
+  "version": "dataset-initialization-v1",
+  "dataset": "drop",
+  "optimizerProfile": {
+    "taskGoal": "Answer the question from the supplied passage.",
+    "inputFeatures": [
+      "Evidence passage is already in the public task; entity, count, arithmetic, rank and span questions."
+    ],
+    "knownErrors": [
+      "Wrong target/rank, intermediate quantities, missing entity members, output-format mismatch."
+    ],
+    "recommended": [
+      {
+        "capability": "CONTEXT.LOAD + INFER.REASONING.SAMPLE",
+        "reason": "Use the supplied passage and identify the requested target."
+      },
+      {
+        "capability": "INTERACTION.ACT.TOOL bounded_arithmetic + INTERACTION.OBSERVE",
+        "reason": "Optional computation only if selected inputs and downstream consumption are explicit."
+      },
+      {
+        "capability": "INFER.REASONING.REFLECT",
+        "reason": "Potential target/span check; preserve supported answers."
+      }
+    ],
+    "notDefault": [
+      {
+        "capability": "RETRIEVAL.SEARCH",
+        "reason": "Current target is only lexical segments of the same public task; justify need and actual hits before adding it."
+      },
+      {
+        "capability": "Cross-task memory or external retrieval",
+        "reason": "No authorized corpus or cross-task resources; task state is not cross-task memory."
+      }
+    ],
+    "directions": [
+      "Target identification, extraction/computation, answer check; each stage must feed the final answer."
+    ],
+    "outputAndCompletion": [
+      "Use the selected public answer strategy; no private answer constants or task-ID branches."
+    ],
+    "costAndLimits": [
+      "Use only host-registered tools and targets under the approved per-task limits; arbitrary network, shell and private evaluator access are forbidden.",
+      "No external corpus or cross-task persistence is registered for this profile."
+    ],
+    "adviceStatus": "Unvalidated Graph design hypotheses; recommended capabilities and organization are not measured improvements."
+  },
+  "selectedSeed": {
+    "sourceProtocol": "reusable-workflow-selection-v1",
+    "sourceCandidate": "A-drop-S1-7",
+    "sourceDefinitionHash": "df635dccbde9663c649921c3dd60b4b3b7be96efeda34cb009b04d2ebe4d0564",
+    "strategy": "Read the passage and question, then answer in one concise line. First decide what the question asks for: a computed numeric value (count, difference, sum, duration, age, percentage), an entity or set of entities (names, categories, age-group labels), or a stated passage span with units. If the question contains an ordinal or superlative qualifier (second, third, smallest, largest, most, least, first, last), enumerate the qualifying passage items in the order the question implies, select the item at the requested rank, and answer that item rather than an adjacent or extreme one. For a computed numeric value, do the arithmetic silently and output only the final number in ordinary decimal notation, without the calculation, units, percent sign, or trailing zeros. Never write the operands, an equals sign, or the arithmetic expression in the answer; the answer is the result alone. If the question asks how many more or fewer one quantity is compared to another, subtract the smaller stated value from the larger and output only that difference, never either operand alone. For an entity or set, list every qualifying entity using the passage's own wording, joined with commas and/or 'and', with no percentages or alternative guesses; drop trailing parenthetical source or qualifier tags such as '(U.S. Census)' from each entity name, and do not add or drop words that the passage does not use for that entity. For a stated span, reproduce the relevant passage expression including its unit and hyphenation. Verify that the value you output is the requested target rather than an intermediate quantity. Do not include derivations, Markdown, labels, or a JSON wrapper.",
+    "presentation": "repeat-task-on-first-sample",
+    "knownExplorationTokens": 278739,
+    "unknownUsageAttempts": 0
+  },
+  "researchMetadata": {
+    "evidence": {
+      "positive": "Selected combined strategy mean F1 89.1287% vs baseline 64.7149% on three repeats.",
+      "negative": "Some adaptive revisions regressed: the elapsed-years case changed from 9 to 10, and numeric/span format changes lost previously supported answers.",
+      "limitation": "Search selection bias remains; numeric/multispan scorer limitations unchanged. Task repetition alone improved one exploration repeat to 74.3450%; the combined gain does not isolate repetition."
+    },
+    "validation": "Selected seed measured on Search; initialization advice not yet quality-tested. Strategies are transferred initialization assets; measured results do not establish performance on the current team backend."
+  }
+}

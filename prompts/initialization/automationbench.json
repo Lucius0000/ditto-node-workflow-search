@@ -1,0 +1,61 @@
+{
+  "version": "dataset-initialization-v1",
+  "dataset": "automationbench",
+  "optimizerProfile": {
+    "taskGoal": "Complete all requested actions using official discovered tools and observations.",
+    "inputFeatures": [
+      "Multi-step service tasks, endpoint discovery, field/path/body contracts and actual world effects."
+    ],
+    "knownErrors": [
+      "Wrong attribute or argument placement, repeated failed searches, omitted associations/notifications, premature done."
+    ],
+    "recommended": [
+      {
+        "capability": "INFER.REASONING.SAMPLE + INTERACTION.ACT.TOOL + INTERACTION.OBSERVE",
+        "reason": "Choose discovered official calls, consume their observations and track unfinished requested actions."
+      },
+      {
+        "capability": "Loop/state history",
+        "reason": "Retain action dependencies and success/error observations within one task."
+      }
+    ],
+    "notDefault": [
+      {
+        "capability": "Done marker or official score as completion proof",
+        "reason": "A high-scoring deal creation omitted the requested contact association; actual observations must support every action."
+      },
+      {
+        "capability": "Private world assertions or modified scoring",
+        "reason": "Evaluator-only; the official grader stays unchanged."
+      }
+    ],
+    "directions": [
+      "Plan requested actions, execute dependency order, observe errors, check remaining actions from public evidence."
+    ],
+    "outputAndCompletion": [
+      "Preserve fixed JSON decision contract and tool schema; done requires observed completion of all requested actions."
+    ],
+    "costAndLimits": [
+      "Use only host-registered tools and targets under the approved per-task limits; arbitrary network, shell and private evaluator access are forbidden.",
+      "Official service calls are permitted only through the existing controlled api_search/api_fetch adapters."
+    ],
+    "adviceStatus": "Unvalidated Graph design hypotheses; recommended capabilities and organization are not measured improvements."
+  },
+  "selectedSeed": {
+    "sourceProtocol": "reusable-workflow-selection-v1",
+    "sourceCandidate": "P0-automationbench",
+    "sourceDefinitionHash": "9284aed76a82140600813008f7eeb3f32ba3fac1c08e2ed300c75ffa65fbf8e9",
+    "strategy": "",
+    "presentation": "no-repeat",
+    "knownExplorationTokens": 5217797,
+    "unknownUsageAttempts": 79
+  },
+  "researchMetadata": {
+    "evidence": {
+      "positive": "Baseline 195/200 retained; several field-mapping changes had real improvements.",
+      "negative": "Numeric best 198/200 rejected because the required association remained absent after failed calls; final new candidate 197/200.",
+      "limitation": "No optimizer strategy selected; task repetition 196/200 was only a single exploration result, not adopted."
+    },
+    "validation": "Selected seed measured on Search; initialization advice not yet quality-tested. Strategies are transferred initialization assets; measured results do not establish performance on the current team backend."
+  }
+}

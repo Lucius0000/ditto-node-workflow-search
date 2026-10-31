@@ -11,3 +11,5 @@ Retrieval's purpose, native schema and failure/permission semantics are fixed. A
 Each run freezes prompt versions/hashes and actual requests. Prompt, definition or helper changes create a new candidate identity requiring new evaluation. Source edits cannot alter a prior frozen run. Gold answers, private assertions and Test feedback are excluded from optimizer messages.
 
 `npm run audit:prompts` checks these boundaries offline and makes no provider network calls.
+
+The separate [prompt-only Search](../docs/prompt-only-search.md) uses approved `prompt-only-s0.en.md` and `prompt-only-s1.en.md` systems with an explicit editable-text manifest. These systems do not replace the legacy Graph optimizer system above. The host-owned first-visit material slot and Automation decision contract are outside that manifest.

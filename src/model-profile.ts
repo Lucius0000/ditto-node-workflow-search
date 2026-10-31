@@ -10,5 +10,5 @@ export const EXPERIMENT_EXECUTION = Object.freeze({
   maxIterations: Number.MAX_SAFE_INTEGER,
 });
 
-/** Profiles select environment capabilities, never different generation settings. */
-export type ExperimentModelProfile = "math" | "automationbench";
+/** Only the explicit optimizer profile may select a structured response format. */
+export type ExperimentModelProfile = "math" | "automationbench" | "optimizer";

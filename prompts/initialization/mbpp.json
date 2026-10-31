@@ -1,0 +1,61 @@
+{
+  "version": "dataset-initialization-v1",
+  "dataset": "mbpp",
+  "optimizerProfile": {
+    "taskGoal": "Implement the requested Python function and its stated input/output behavior.",
+    "inputFeatures": [
+      "Natural-language specification and public examples; private assertions unavailable."
+    ],
+    "knownErrors": [
+      "Confusion between return and print, input shapes, signature or edge cases."
+    ],
+    "recommended": [
+      {
+        "capability": "CONTEXT.LOAD + INFER.REASONING.SAMPLE",
+        "reason": "Retain original wording and match return/print semantics."
+      },
+      {
+        "capability": "INFER.REASONING.REFLECT",
+        "reason": "Potential focused contract check, preserving supported code."
+      }
+    ],
+    "notDefault": [
+      {
+        "capability": "DROP-style numeric-only answers",
+        "reason": "The required artifact is executable code, not a numeric span."
+      },
+      {
+        "capability": "Evaluator/private tests as tools",
+        "reason": "Unavailable to the Agent and optimizer."
+      }
+    ],
+    "directions": [
+      "Separate implementation from one bounded check when a specific error justifies the cost."
+    ],
+    "outputAndCompletion": [
+      "Produce self-contained Python with exact public signature and required return/print semantics."
+    ],
+    "costAndLimits": [
+      "Use only host-registered tools and targets under the approved per-task limits; arbitrary network, shell and private evaluator access are forbidden.",
+      "No external corpus or cross-task persistence is registered for this profile."
+    ],
+    "adviceStatus": "Unvalidated Graph design hypotheses; recommended capabilities and organization are not measured improvements."
+  },
+  "selectedSeed": {
+    "sourceProtocol": "reusable-workflow-selection-v1",
+    "sourceCandidate": "A-mbpp-S1-1",
+    "sourceDefinitionHash": "2ebaf1050f6a737fa0dbe9ba23163f4177b8a1c40b5df1e6523e620070375f07",
+    "strategy": "Solve the original public task accurately. Produce a complete, self-contained Python solution.\n\nRequirements:\n1. Use the exact function name and parameter list shown in the task prompt. Do not rename, reorder, or add required parameters.\n2. The function must return the computed result. If the task explicitly says to print, also print it; otherwise do not rely on printing as the output.\n3. Handle the input shapes the task describes (lists, strings, integers, nested structures) and any edge cases the wording implies, such as empty inputs, single elements, or out-of-range indices.\n4. Keep the solution minimal and correct: no placeholder code, no TODOs, no external dependencies beyond the standard library, and no interactive input.\n5. After the code, briefly state the key assumption or edge case you handled, in one or two sentences. Do not pad with long explanations or unrelated examples.\n\nReturn the final answer as a fenced Python code block containing the function definition, followed by the short note.",
+    "presentation": "no-repeat",
+    "knownExplorationTokens": 36982,
+    "unknownUsageAttempts": 0
+  },
+  "researchMetadata": {
+    "evidence": {
+      "positive": "Selected instruction: 74/74/75 of 86 vs baseline 73/71/73.",
+      "negative": "Task repetition alone scored 71 vs baseline 73 in one exploration repeat; later adaptive variants scored 72.",
+      "limitation": "Small Search improvement; paired interval crosses zero; no independent Test."
+    },
+    "validation": "Selected seed measured on Search; initialization advice not yet quality-tested. Strategies are transferred initialization assets; measured results do not establish performance on the current team backend."
+  }
+}

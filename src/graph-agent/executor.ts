@@ -108,7 +108,7 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
  const normalized=new WeakMap<object,any>(),reflectionBindings=new Map<string,ReflectionBinding>();
  const nodeInputs:Record<string,any>={},nodeOutputs:Record<string,any>={},rawNodeOutputs:Record<string,any>={};
  const executedNodeIds:string[]=[],executedGraphIds:string[]=[],trace:{graphId:string;nodeId:string;output:unknown}[]=[];
- const audits:CheckerAudit[]=[],state=structuredClone(definition.loop.state??{});
+ const audits:CheckerAudit[]=[],state=structuredClone(definition.loop.state??{}),sampleVisits=new Set<string>();
  const normalize=(id:string,raw:any):any=>{
   if(!raw||typeof raw!=='object')return raw;if(normalized.has(raw))return normalized.get(raw);
   if(raw.status&&raw.status!=='success'){
@@ -160,9 +160,11 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
    case'INTERACTION.OBSERVE':return{result:get(c.result)};
    case'RETRIEVAL.SEARCH':return{query:{content:asText(get(c.query))},target:{name:'task-public'},limit:c.limit??5};
    case'INFER.REASONING.SAMPLE':{
+    const first=!sampleVisits.has(node.id);sampleVisits.add(node.id);
     const instruction=c.instruction||baselinePrompts(task.dataset)?.agent||'Solve the original public task accurately.';
     const body=task.dataset==='drop'||task.dataset==='gsm8k'?baselineTextMessages(task.dataset,instruction,task.prompt,evidence()):[{role:'user' as const,content:`${instruction}\n\n${task.prompt}\n\nOutput requirements:\n${task.outputInstruction}\n\n${evidence()}`}];
-    const additional=[...(c.user===undefined?[]:[{role:'user' as const,content:extra()}]),...(toolCatalog?[{role:'user' as const,content:toolCatalog}]:[])];
+    const firstText=first&&c.firstUser!==undefined?asText(get(c.firstUser)):'';
+    const additional=[...(c.user===undefined?[]:[{role:'user' as const,content:extra()}]),...(firstText?[{role:'user' as const,content:firstText}]:[]),...(toolCatalog?[{role:'user' as const,content:toolCatalog}]:[])];
     return{messages:[{role:'system',content:NODE_SYSTEM_PROMPT},...(task.dataset==='drop'?additional:[]),...body,...(task.dataset==='drop'?[]:additional),...(task.dataset==='drop'&&task.outputInstruction?[{role:'user',content:`Additional public task output requirements:\n${task.outputInstruction}`}]:[]),...(c.outputFormat==='json'?[{role:'user',content:format()}]:[])],model,generation:GENERATION,metadata};
    }
    case'INFER.REASONING.TRAJECTORY':return{messages:[{role:'system',content:NODE_SYSTEM_PROMPT},...userMessages(),{role:'user',content:`Evidence:\n${evidence()}`}],objective:c.instruction,strategy:{name:c.strategy,options:c.options??{}},constraints:{maxSteps:c.maxSteps??Number.MAX_SAFE_INTEGER},model,generation:GENERATION,metadata};

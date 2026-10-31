@@ -21,6 +21,15 @@ const root=()=>structuredClone(BASELINE_DEFINITION.graphs[0]!.nodes[0]!);
 const solve=(dependencies:string[]=[],evidence:Source[]=[]):DefinitionNode=>({id:'solve',type:'INFER.REASONING.SAMPLE',dependencies,config:{instruction:'Return the number.',evidence}});
 const single=(nodes:DefinitionNode[],output='solve'):GraphDefinition=>({version:1,graphs:[{id:'agent',nodes}],loop:{entryGraphId:'agent',maxGraphRuns:4,transitions:{agent:{kind:'end'}}},output:{nodeId:output,view:'answer'}});
 
+test('SAMPLE firstUser adds public material once per attempt and an empty slot preserves messages',async()=>{
+ const baseline=structuredClone(BASELINE_DEFINITION),empty=structuredClone(baseline);empty.graphs[0]!.nodes[1]!.config.firstUser={literal:''};
+ assert.deepEqual((await execute(baseline)).calls[0].messages,(await execute(empty)).calls[0].messages);
+ const repeated=structuredClone(empty);repeated.graphs[0]!.nodes[1]!.config.firstUser={literal:'FIRST_VISIT_ONLY'};
+ repeated.loop.maxGraphRuns=2;repeated.loop.transitions.agent={kind:'repeat',graphId:'agent',maxVisits:2,until:{left:{literal:false},operator:'truthy'}};
+ const a=await execute(repeated),b=await execute(repeated);assert.equal(a.calls.length,2);
+ for(const run of [a,b]){assert.equal(run.calls[0].messages.filter((m:any)=>m.content==='FIRST_VISIT_ONLY').length,1);assert.equal(run.calls[1].messages.filter((m:any)=>m.content==='FIRST_VISIT_ONLY').length,0);assert.deepEqual(run.calls[0].messages.filter((m:any)=>m.role==='system'),run.calls[1].messages.filter((m:any)=>m.role==='system'));}
+});
+
 test('B baseline runs native Ditto and records actual usage and node traces',async()=>{
  const {result,calls}=await execute(BASELINE_DEFINITION);assert.equal(result.answer,'42');assert.equal(calls.length,1);assert.equal(result.totalTokens,3);
  assert.deepEqual(result.executedNodeIds,['context','solve']);assert.equal(result.trace.length,2);

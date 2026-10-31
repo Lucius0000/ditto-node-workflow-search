@@ -139,8 +139,14 @@ def prepare_request(body, profile="math"):
     prepared["extra_body"] = extra
     for field in ("thinking", "reasoning_effort", "top_p", "max_completion_tokens", "seed"):
         prepared.pop(field, None)
+    response_format = {"type": "text"}
+    if profile == "optimizer":
+        selected = body.get("response_format", response_format)
+        if not isinstance(selected, dict) or selected.get("type") not in ("text", "json_object", "json_schema"):
+            raise ValueError("Unsupported optimizer response format")
+        response_format = selected
     prepared.update(temperature=0, max_tokens=393216, n=1,
-                    response_format={"type": "text"}, stream=True,
+                    response_format=response_format, stream=True,
                     stream_options={"include_usage": True})
     return prepared
 
@@ -223,6 +229,9 @@ async def record_http_request(request):
     if current is not None:
         current["attempts"] += 1
         log({"phase": "http-attempt", "id": current["requestId"], "attempt": current["attempts"]})
+        # Payload evidence only: never archive Authorization or signed headers.
+        if os.environ.get("DITTO_PROVIDER_LOG"):
+            log({"phase": "http-request", "id": current["requestId"], "attempt": current["attempts"], "body": json.loads(request.content)})
         if _attempt_reporting.get():
             emit({"id": current["requestId"], "event": "attempt", "diagnostics": dict(current)})
 

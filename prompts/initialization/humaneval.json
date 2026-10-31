@@ -1,0 +1,61 @@
+{
+  "version": "dataset-initialization-v1",
+  "dataset": "humaneval",
+  "optimizerProfile": {
+    "taskGoal": "Implement the public Python function contract.",
+    "inputFeatures": [
+      "Function signature, docstring and public examples; private tests unavailable."
+    ],
+    "knownErrors": [
+      "Signature drift, incomplete code, boundary mistakes; six adaptive strategies did not improve on the presentation seed."
+    ],
+    "recommended": [
+      {
+        "capability": "CONTEXT.LOAD + INFER.REASONING.SAMPLE",
+        "reason": "Preserve the full function contract and produce one implementation."
+      },
+      {
+        "capability": "INFER.REASONING.REFLECT",
+        "reason": "Potential contract/edge-case check; revisedResult must carry a complete implementation."
+      }
+    ],
+    "notDefault": [
+      {
+        "capability": "External retrieval or cross-task memory",
+        "reason": "No external corpus or cross-task evidence is authorized."
+      },
+      {
+        "capability": "Python execution as an Agent tool",
+        "reason": "The grader container is evaluator-only; no Python execution tool is currently registered."
+      }
+    ],
+    "directions": [
+      "Generate, check a specific contract risk, revise only with a concrete issue."
+    ],
+    "outputAndCompletion": [
+      "Return complete Python code with the original function signature; no private tests as feedback."
+    ],
+    "costAndLimits": [
+      "Use only host-registered tools and targets under the approved per-task limits; arbitrary network, shell and private evaluator access are forbidden.",
+      "No external corpus or cross-task persistence is registered for this profile."
+    ],
+    "adviceStatus": "Unvalidated Graph design hypotheses; recommended capabilities and organization are not measured improvements."
+  },
+  "selectedSeed": {
+    "sourceProtocol": "reusable-workflow-selection-v1",
+    "sourceCandidate": "H1-humaneval",
+    "sourceDefinitionHash": "94dd31c720bd32b8b787d4b5db5e7b517c781505bafb173ff779b1e086d86bc6",
+    "strategy": "",
+    "presentation": "repeat-task-on-first-sample",
+    "knownExplorationTokens": 17195,
+    "unknownUsageAttempts": 0
+  },
+  "researchMetadata": {
+    "evidence": {
+      "positive": "First task repetition: 32/33 on all three repeats vs baseline 31/33.",
+      "negative": "Six adaptive strategies remained at 31/33; no general prompt-search gain.",
+      "limitation": "33 Search tasks, selected on the same set; no independent Test."
+    },
+    "validation": "Selected seed measured on Search; initialization advice not yet quality-tested. Strategies are transferred initialization assets; measured results do not establish performance on the current team backend."
+  }
+}

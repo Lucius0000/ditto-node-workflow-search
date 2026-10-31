@@ -145,13 +145,15 @@ export function withProviderLifecycle(provider: ModelProvider, hooks: Pick<Exper
 }
 
 /** Enforce the same policy across SAMPLE, TRAJECTORY, optimizer and stream calls. */
-export function applyModelProfile(provider: ModelProvider, _profile: ExperimentModelProfile): ModelProvider {
+export function applyModelProfile(provider: ModelProvider, profile: ExperimentModelProfile): ModelProvider {
   const check = (output: SampleOutput): SampleOutput => {
     if(output.finishReason==='error')throw Object.assign(new Error('Provider generation failed (finish_reason=error)'),{code:'PROVIDER_GENERATION_ERROR',infrastructureFailure:true});
     return output;
   };
   function configure(input: Parameters<ModelProvider["invoke"]>[0]): Parameters<ModelProvider["invoke"]>[0] {
     const providerOptions: Record<string, unknown> = { ...input.model.providerOptions, ...EXPERIMENT_PROVIDER_OPTIONS };
+    if (profile === "optimizer" && input.model.providerOptions?.response_format !== undefined)
+      providerOptions.response_format = input.model.providerOptions.response_format;
     delete providerOptions.top_p;
     delete providerOptions.reasoning_effort;
     delete providerOptions.seed;
