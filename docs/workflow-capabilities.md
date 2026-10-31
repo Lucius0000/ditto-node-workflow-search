@@ -1,5 +1,7 @@
 # Workflow capabilities and time budgets
 
+For the declarative four-dataset evaluation entry point, see [selected workflow delivery](recommended-search-and-test.md).
+
 [中文说明](workflow-capabilities.zh-CN.md)
 
 The regular `src/cli.ts` entry keeps optimizer-directed **complete workflow snapshots**. The optimizer can insert, replace, delete and rewire legal nodes; this is not the append-only historical experiment driver.

@@ -1,5 +1,7 @@
 # 工作流能力与时间预算
 
+声明式四数据集评价入口见[选用工作流交付](recommended-search-and-test.zh-CN.md)。
+
 [English](workflow-capabilities.md)
 
 通用入口`src/cli.ts`继续由优化器生成完整工作流，可插入、删除、替换节点及修改合法依赖，不改成历史实验的逐次追加模式。

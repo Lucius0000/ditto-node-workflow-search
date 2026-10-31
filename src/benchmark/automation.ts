@@ -19,6 +19,7 @@ export const AUTOMATION_TOOLS = ["api_search", "api_fetch", "base64_encode"] as 
 const REVISION = "4a8e1061254004d9dac807054eed33fad7d1ff14";
 const LOCK_HASH = "c7d275af5ad98caa7058edce5806281a340f63781cdff3062622c9c0d5d7c521";
 const SPLIT_HASHES = { validate: "926b0d17a075f71a4851f505bc23c02fb982bb6e01e12506db8a605f40033354", test: "fdc0c83b9c1275d8809d28d5c3300e0f38a8b0a8ae2e23eb7700c7195f323331" };
+export function automationSplitLock(split:'validate'|'test'){return{sha256:SPLIT_HASHES[split],count:split==='validate'?200:600};}
 
 /** Only public tool access is placed in actor scope; world/rubric operations stay private. */
 export interface AutomationSession {

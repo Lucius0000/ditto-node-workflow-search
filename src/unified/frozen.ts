@@ -1,0 +1,33 @@
+import {GENERATION,PROTOCOL} from '../protocol.js';
+import {publicAnswerContract} from '../benchmark/answer-contract.js';
+import {fixedSplitLock} from '../benchmark/fixed-splits.js';
+import {automationSplitLock} from '../benchmark/automation.js';
+import {NATIVE_TEMPLATE_MANIFEST} from '../prompt-search/contract.js';
+import {FROZEN_ASSET_RUNTIME_POLICY,assertEvaluationRuntimeIdentity,type EvaluationRuntimeIdentity} from '../run/case-recovery.js';
+import type {DatasetName} from '../domain.js';import {validateDefinition,type GraphDefinition} from '../graph-agent/schema.js';import {artifactHash} from './store.js';
+import {UNIFIED_SYSTEM_PROMPT_SHA256} from './prompts.js';import {NODE_SYSTEM_PROMPT_SHA256} from '../graph-agent/system.js';
+
+export const SELECTED_EXPORT_PROTOCOL='ditto-selected-workflow-freeze-v2';
+export function testContract(dataset:DatasetName,dockerImage:string,fixtureHash?:string,timeBudget:unknown=null,automation?:{protocol:string}){
+ if(dataset==='automationbench'&&automation?.protocol!==(fixtureHash?'cli-engineering-automation-v1':'automationbench-public-simple-v1'))throw Error('A verified Automation scoring identity is required for this data role');
+ return{mode:fixtureHash?'engineering-fixture':'formal',data:fixtureHash?{hash:fixtureHash}:dataset==='automationbench'?automationSplitLock('test'):fixedSplitLock(dataset,'test'),scoring:fixtureHash?'synthetic-engineering-equality':PROTOCOL.id,answerContract:publicAnswerContract(dataset)??null,dockerImage,testRepeats:3,timeBudget,...(dataset==='automationbench'?{automation}: {})};
+}
+function fields(value:any,names:readonly string[]){if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join()!==[...names].sort().join())throw Error('Frozen selection has missing or unknown fields');}
+const sourceFields=['protocol','candidateId','revision','recordHash','definitionHash'];
+export function validateSelectionSource(source:any,definition:GraphDefinition){fields(source,sourceFields);for(const k of sourceFields)if(typeof source[k]!=='string'||!source[k].trim())throw Error('Invalid selection source '+k);if(!/^[a-f0-9]{64}$/.test(source.recordHash)||source.definitionHash!==artifactHash(definition))throw Error('Selection source definition/record hash differs');}
+export interface FrozenV2{schemaVersion:2;protocol:typeof SELECTED_EXPORT_PROTOCOL;sourceKind:'selected-search-workflow-export'|'formal-search-selection'|'engineering-fixture-search';selectedBeforeTest:true;id:string;dataset:DatasetName;definition:GraphDefinition;artifactHash:string;executionIdentity:EvaluationRuntimeIdentity;fullSourceIdentity:EvaluationRuntimeIdentity;hashPolicy:typeof FROZEN_ASSET_RUNTIME_POLICY;promptHash:string;nodeSystemHash:string;nativeTemplateHash:string;model:string;endpoint:string;generation:typeof GENERATION;source:Record<string,any>;assets:Record<string,any>|null;testContract:ReturnType<typeof testContract>;payloadHash:string}
+export function createFrozenV2(input:Omit<FrozenV2,'schemaVersion'|'protocol'|'selectedBeforeTest'|'artifactHash'|'hashPolicy'|'promptHash'|'nodeSystemHash'|'nativeTemplateHash'|'generation'|'payloadHash'>):FrozenV2{
+ validateDefinition(input.definition);validateSelectionSource(input.source,input.definition);if(input.id!==input.source.candidateId)throw Error('Selected ID differs from source candidate');
+ const value:Omit<FrozenV2,'payloadHash'>={...input,schemaVersion:2,protocol:SELECTED_EXPORT_PROTOCOL,selectedBeforeTest:true,artifactHash:artifactHash(input.definition),hashPolicy:FROZEN_ASSET_RUNTIME_POLICY,promptHash:UNIFIED_SYSTEM_PROMPT_SHA256,nodeSystemHash:NODE_SYSTEM_PROMPT_SHA256,nativeTemplateHash:artifactHash(NATIVE_TEMPLATE_MANIFEST),generation:GENERATION};return{...value,payloadHash:artifactHash(value)};
+}
+export function validateFrozenV2(value:any,expected:{dataset:DatasetName;model:string;endpoint:string;executionIdentity:EvaluationRuntimeIdentity;testContract:ReturnType<typeof testContract>}):asserts value is FrozenV2{
+ fields(value,['schemaVersion','protocol','sourceKind','selectedBeforeTest','id','dataset','definition','artifactHash','executionIdentity','fullSourceIdentity','hashPolicy','promptHash','nodeSystemHash','nativeTemplateHash','model','endpoint','generation','source','assets','testContract','payloadHash']);
+ if(value.schemaVersion!==2||value.protocol!==SELECTED_EXPORT_PROTOCOL||value.hashPolicy!==FROZEN_ASSET_RUNTIME_POLICY||!['selected-search-workflow-export','formal-search-selection','engineering-fixture-search'].includes(value.sourceKind)||value.selectedBeforeTest!==true||typeof value.id!=='string'||!value.id||value.dataset!==expected.dataset||value.sourceKind==='engineering-fixture-search'&&value.testContract?.mode!=='engineering-fixture')throw Error('Frozen dataset/source/protocol/hash policy differs');
+ const {payloadHash,...payload}=value;if(payloadHash!==artifactHash(payload))throw Error('Frozen payload hash differs');
+ for(const v of [value.executionIdentity,value.fullSourceIdentity])fields(v,['schemaVersion','sourceSha256','compiledSha256','providerEnvironmentSha256','providerEnvironment']);
+ assertEvaluationRuntimeIdentity(value.executionIdentity,expected.executionIdentity);assertEvaluationRuntimeIdentity(value.fullSourceIdentity,value.fullSourceIdentity);
+ if(value.model!==expected.model||value.endpoint!==expected.endpoint||value.promptHash!==UNIFIED_SYSTEM_PROMPT_SHA256||value.nodeSystemHash!==NODE_SYSTEM_PROMPT_SHA256||value.nativeTemplateHash!==artifactHash(NATIVE_TEMPLATE_MANIFEST)||artifactHash(value.generation)!==artifactHash(GENERATION)||artifactHash(value.testContract)!==artifactHash(expected.testContract)||value.artifactHash!==artifactHash(value.definition))throw Error('Frozen model/runtime/data/scoring/definition identity differs');
+ validateDefinition(value.definition);validateSelectionSource(value.source,value.definition);
+ if(value.id!==value.source.candidateId)throw Error('Selected ID differs from source candidate');
+ if(value.assets!==null){fields(value.assets,['version','dataset','templateHash','profileHash','optimizerProfileHash','researchMetadataHash','sourceDefinitionHash','definitionHash','presentation','guidance','sourceCandidate']);if(value.assets.version!=='reusable-prompt-assets-v1'||value.assets.dataset!==expected.dataset||!['no-repeat','repeat-task-on-first-sample'].includes(value.assets.presentation)||typeof value.assets.guidance!=='boolean')throw Error('Invalid frozen asset metadata');for(const k of ['templateHash','profileHash','optimizerProfileHash','researchMetadataHash','sourceDefinitionHash','definitionHash'])if(!/^[a-f0-9]{64}$/.test(value.assets[k]))throw Error('Invalid frozen asset hash');}
+}

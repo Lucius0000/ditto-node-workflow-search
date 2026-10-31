@@ -33,3 +33,7 @@ Baseline先完整评测。首道实际题兼作动态接口检查，复用正式
 身份包含源码、编译产物、prompt、锁文件、Python/SDK、模型、数据和重复次数。预算在并发槽内准入，覆盖优化器、原生内部调用与格式修复；SDK重试、失败和在途用量保留。token是结算后准入限额，不是硬截断。provider返回model/fingerprint时记录；没有返回则不把alias当精确模型版本。
 
 选优只看完整Search，F1同分优先同口径低token；未知用量不当零。冻结最佳后独立全Test三遍、无剪枝，不回传搜索也不再用Test选winner。离线验证不产生新的DROP准确率结论。
+
+## 独立提示词协议
+
+四集默认初始化与冻结Test命令见[工作流交付](recommended-search-and-test.zh-CN.md)；正式统一入口仍使用原完整图变异与评价规则。

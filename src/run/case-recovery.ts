@@ -5,6 +5,8 @@ import type { CaseResult } from "../domain.js";
 import { renameArtifact } from "./atomic.js";
 
 const CODE_IDENTITY_DOMAIN = "ditto-evaluation-code-v4:prompts:utf8-crlf-to-lf\0";
+export const FROZEN_ASSET_RUNTIME_POLICY = 'frozen-initialization-assets-v1';
+const FROZEN_ASSET_FILES = new Set(['humaneval','mbpp','drop','automationbench','strategy-template'].map(name=>`prompts/initialization/${name}.json`));
 const CODE_TEXT_EXTENSIONS = new Set([".ts", ".js", ".mjs", ".cjs", ".py", ".ps1", ".json", ".txt", ".md"]);
 
 /** Normalize only controlled UTF-8 text; binary assets retain their exact bytes. */
@@ -17,13 +19,15 @@ async function codeIdentityBytes(path: string): Promise<Uint8Array> {
 }
 
 /** Versioned source identity is stable under Git's CRLF-to-LF text checkout. */
-export async function evaluationCodeHash(root: string): Promise<string> {
-  const hash = createHash("sha256").update(CODE_IDENTITY_DOMAIN);
+export async function evaluationCodeHash(root: string, policy?:typeof FROZEN_ASSET_RUNTIME_POLICY): Promise<string> {
+  if(policy!==undefined&&policy!==FROZEN_ASSET_RUNTIME_POLICY)throw Error('Unknown execution hash policy');
+  const hash = createHash("sha256").update(policy?CODE_IDENTITY_DOMAIN+policy+'\0':CODE_IDENTITY_DOMAIN);
   async function visit(relative: string): Promise<void> {
     const entries = await readdir(join(root, relative), { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (entry.name === "__pycache__") continue;
       const name = `${relative}/${entry.name}`;
+      if(policy&&FROZEN_ASSET_FILES.has(name))continue;
       if (entry.isDirectory()) await visit(name);
       else if (entry.isFile()) { hash.update(name); hash.update(await codeIdentityBytes(join(root, name))); }
     }
@@ -88,9 +92,9 @@ export async function evaluationCompiledHash(root: string, compiledDirectory = "
   return hash.digest("hex");
 }
 
-export async function evaluationRuntimeIdentity(root: string, providerEnvironment: Readonly<Record<string, string>>, compiledDirectory = "dist"): Promise<EvaluationRuntimeIdentity> {
+export async function evaluationRuntimeIdentity(root: string, providerEnvironment: Readonly<Record<string, string>>, compiledDirectory = "dist", policy?:typeof FROZEN_ASSET_RUNTIME_POLICY): Promise<EvaluationRuntimeIdentity> {
   const environment = normalizedEnvironment({ nodeVersion: process.version, ...providerEnvironment });
-  const [sourceSha256, compiledSha256] = await Promise.all([evaluationCodeHash(root), evaluationCompiledHash(root, compiledDirectory)]);
+  const [sourceSha256, compiledSha256] = await Promise.all([evaluationCodeHash(root,policy), evaluationCompiledHash(root, compiledDirectory)]);
   return { schemaVersion: 1, sourceSha256, compiledSha256, providerEnvironment: environment,
     providerEnvironmentSha256: identityHash(environment) };
 }

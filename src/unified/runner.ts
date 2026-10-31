@@ -9,7 +9,7 @@ import {createExperimentRuntime} from '../ditto/runtime.js';
 import {runGraphAgent} from '../graph-agent/executor.js';
 import {validateDefinition,BASELINE_DEFINITION,type GraphDefinition} from '../graph-agent/schema.js';
 import {NODE_SYSTEM_PROMPTS,NODE_SYSTEM_PROMPT_SHA256} from '../graph-agent/system.js';
-import {evaluationRuntimeIdentity,assertEvaluationRuntimeIdentity} from '../run/case-recovery.js';
+import {evaluationRuntimeIdentity,assertEvaluationRuntimeIdentity,FROZEN_ASSET_RUNTIME_POLICY} from '../run/case-recovery.js';
 import {GENERATION,PROTOCOL} from '../protocol.js';
 import {validateTimeBudget,type TimeBudgetPolicy} from '../execution/time-budget.js';
 import type {DatasetName} from '../domain.js';
@@ -21,12 +21,17 @@ import {UnifiedRunStore,artifactHash} from './store.js';
 import {evaluateUnifiedCandidate} from './evaluation.js';
 import {automationBaseline} from '../graph-agent/automation-baseline.js';
 import {automationIdentity} from '../benchmark/automation.js';
+import {loadPromptAssets} from '../prompt-search/assets.js';
+import {ASSET_DATASETS} from '../prompt-search/assets.js';
+import {loadEngineeringFixture} from './engineering-fixture.js';
+import {createFrozenV2,validateFrozenV2,validateSelectionSource,testContract,type FrozenV2} from './frozen.js';
 import {createDirectionBudget,type BudgetDirection} from './direction-budget.js';
 import {MULTI_WORKER_POLICY,type ExplorationDirection} from './exploration.js';
 
 export const UNIFIED_FORMAL_PROTOCOL='ditto-declarative-staged-main-splits-v1';
 export interface UnifiedCLIOptions{
- readonly command:'search'|'test';readonly dataset:DatasetName;readonly projectRoot:string;
+ readonly command:'search'|'test'|'freeze';readonly dataset:DatasetName;readonly projectRoot:string;
+ readonly initialization?:'baseline';readonly workflowFile?:string;readonly engineeringFixture?:string;
  readonly dataDir:string;readonly outputDir?:string;readonly runDir?:string;readonly userPromptFile?:string;readonly resume:boolean;readonly offlineOnly:boolean;
  readonly maxValidEvaluations:number;readonly maxDesignRounds:number;readonly maxProposalAttempts:number;readonly seed:number;
  readonly concurrency:number;readonly maxCalls:number;readonly maxTokens:number;readonly requestMs:number|null;readonly workflowMs:number|null;
@@ -49,20 +54,51 @@ export function providerEnvironment(projectRoot:string):Readonly<Record<string,s
 /** Search and Test use different directories and never send Test observations to the optimizer. */
 export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<void>{
  const root=resolve(options.projectRoot);
- const settings={...loadProviderSettings(options.offlineOnly?{...process.env,CODE_SOUL_API_KEY:'offline-not-invoked'}:process.env),concurrency:options.concurrency};
- const environment=providerEnvironment(root);
- const executionIdentity=await evaluationRuntimeIdentity(root,environment);
- const timeBudget=validateTimeBudget({requestMs:options.requestMs,workflowMs:options.workflowMs,reason:'Explicit main-compatible formal policy; no aggregate workflow deadline unless configured'});
+ if(options.command==='test'&&!options.runDir){
+  if(!ASSET_DATASETS.includes(options.dataset as any))throw Error('This dataset requires an existing frozen --run-dir');
+  const directory=resolve(options.outputDir??join(root,'runs','selected-test',options.dataset,new Date().toISOString().replace(/[:.]/g,'-')));
+  await runUnifiedExperiment({...options,command:'freeze',outputDir:directory});
+  const {outputDir,...testOptions}=options;return runUnifiedExperiment({...testOptions,runDir:directory});
+ }
+
+ const fixture=options.engineeringFixture?await loadEngineeringFixture(options.engineeringFixture,options.dataset,options.command==='search'?'validate':'test'):undefined;
+ const noInference=options.offlineOnly||options.command==='freeze';
+ const providerSettings=fixture?{...fixture.provider,timeoutMs:10000}:loadProviderSettings(noInference?{...process.env,CODE_SOUL_API_KEY:'offline-not-invoked'}:process.env);
+ const settings={...providerSettings,concurrency:options.concurrency};
  const sourceDirectory=options.command==='test'?resolve(options.runDir!):options.resume?resolve(options.runDir!):resolve(options.outputDir??join(root,'runs','unified',options.dataset,new Date().toISOString().replace(/[:.]/g,'-')));
  const store=new UnifiedRunStore(options.command==='test'?join(sourceDirectory,'test'):sourceDirectory);
  const sourceStore=new UnifiedRunStore(sourceDirectory);
- let frozen:FrozenSelection|undefined;
+ let frozen:FrozenSelection|FrozenV2|undefined;
+ if(options.command==='test')frozen=await sourceStore.read<FrozenSelection|FrozenV2>('frozen-selection.json');
+ const existingManifest=options.command==='search'&&options.resume?await sourceStore.read<any>('manifest.json'):undefined;
+ const selectedDefault=ASSET_DATASETS.includes(options.dataset as any)&&options.initialization!=='baseline';
+ const recommended=options.command==='search'?(options.resume?Boolean(existingManifest?.identity?.assets):selectedDefault):options.command==='freeze'&&!options.workflowFile&&selectedDefault;
+ if(recommended&&options.userPromptFile)throw Error('Use explicit --initialization baseline for a historical prompt override');
+ const hashPolicy=options.resume?existingManifest?.identity?.hashPolicy:options.command==='freeze'||recommended||fixture||frozen?.schemaVersion===2?FROZEN_ASSET_RUNTIME_POLICY:undefined;
+ const environment=providerEnvironment(root),executionIdentity=await evaluationRuntimeIdentity(root,environment,'dist',hashPolicy),fullSourceIdentity=hashPolicy?await evaluationRuntimeIdentity(root,environment):executionIdentity;
+ const timeBudget=validateTimeBudget({requestMs:options.requestMs,workflowMs:options.workflowMs,reason:'Explicit main-compatible formal policy; no aggregate workflow deadline unless configured'});
+ let automationExecution:Awaited<ReturnType<typeof automationIdentity>>|{protocol:string;fixtureHash:string}|undefined;
+ if(options.dataset==='automationbench'){
+  if(fixture)automationExecution={protocol:'cli-engineering-automation-v1',fixtureHash:fixture.hash};
+  else try{automationExecution=await automationIdentity();}catch(error){throw Error('Automation scoring source/environment/bridge identity unavailable: '+(error instanceof Error?error.message:String(error)));}
+ }
+ const expectedTest=testContract(options.dataset,options.dockerImage,fixture?.hash,timeBudget,automationExecution);
+ if(options.command==='test'&&(options.workflowFile||options.userPromptFile))throw Error('Test consumes only its frozen definition');
  if(options.command==='test'){
-  frozen=await sourceStore.read<FrozenSelection>('frozen-selection.json');
-  if(!frozen.selectedBeforeTest||frozen.dataset!==options.dataset||frozen.protocol!==UNIFIED_FORMAL_PROTOCOL)throw Error('Test requires a matching frozen unified Search candidate');
-  assertEvaluationRuntimeIdentity(frozen.executionIdentity,executionIdentity);
-  if(frozen.promptHash!==UNIFIED_SYSTEM_PROMPT_SHA256||frozen.model!==settings.model||frozen.endpoint!==settings.baseUrl||JSON.stringify(frozen.generation)!==JSON.stringify(GENERATION)||frozen.artifactHash!==artifactHash(frozen.definition))throw Error('Frozen candidate/model/prompt identity differs');
-  validateDefinition(frozen.definition);
+  if(frozen!.schemaVersion===2)validateFrozenV2(frozen,{dataset:options.dataset,model:settings.model,endpoint:settings.baseUrl,executionIdentity,testContract:expectedTest});
+  else{if(frozen!.schemaVersion!==1||!frozen!.selectedBeforeTest||frozen!.dataset!==options.dataset||frozen!.protocol!==UNIFIED_FORMAL_PROTOCOL||fixture)throw Error('Test requires a matching frozen unified Search candidate');
+   assertEvaluationRuntimeIdentity(frozen!.executionIdentity,executionIdentity);
+   if(frozen!.promptHash!==UNIFIED_SYSTEM_PROMPT_SHA256||frozen!.model!==settings.model||frozen!.endpoint!==settings.baseUrl||JSON.stringify(frozen!.generation)!==JSON.stringify(GENERATION)||frozen!.artifactHash!==artifactHash(frozen!.definition))throw Error('Frozen candidate/model/prompt identity differs');validateDefinition(frozen!.definition);}
+ }
+ if(options.command==='freeze'){
+  if(await sourceStore.optional('frozen-selection.json')||await sourceStore.optional('manifest.json'))throw Error('Freeze output already exists; use a new output directory');
+  const assets=recommended?await loadPromptAssets(options.dataset):undefined;
+  const selected=assets?{dataset:options.dataset,id:assets.manifest.sourceCandidate,definition:assets.definition,source:assets.source}:JSON.parse(await readFile(options.workflowFile!,'utf8'));
+  if(Object.keys(selected).sort().join()!=='dataset,definition,id,source'||selected.dataset!==options.dataset||typeof selected.id!=='string'||!selected.id)throw Error('Selected workflow requires dataset, id, definition and source');
+  validateDefinition(selected.definition);validateSelectionSource(selected.source,selected.definition);
+  const exported=createFrozenV2({sourceKind:'selected-search-workflow-export',id:selected.id,dataset:options.dataset,definition:selected.definition,executionIdentity,fullSourceIdentity,model:settings.model,endpoint:settings.baseUrl,source:selected.source,assets:assets?.manifest??null,testContract:expectedTest});
+  await sourceStore.write('frozen-selection.json',exported);await sourceStore.write('best/candidate.json',exported.definition);await sourceStore.write('manifest.json',{status:'selected-workflow-exported',sourceKind:exported.sourceKind,qualitySearchPerformed:false,engineeringFixture:Boolean(fixture),identity:artifactHash(exported),fullSourceIdentity});await sourceStore.snapshot(root);
+  console.log(JSON.stringify({phase:'selected-workflow-exported',directory:sourceDirectory,artifactHash:exported.artifactHash,sourceKind:exported.sourceKind,engineeringFixture:Boolean(fixture),providerCreated:false}));return;
  }
  const previousManifest=await store.optional<Record<string,unknown>>('manifest.json');
  if(previousManifest&&!options.resume)throw Error('Run directory exists; use --resume true or a new --output-dir');
@@ -70,21 +106,24 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
  const previousUser=options.resume?await store.optional<{text:string}>('prompts/initial-user.json'):undefined;
  const initialUser=options.userPromptFile?await readFile(options.userPromptFile,'utf8'):previousUser?.text;
  if(initialUser!==undefined&&(!initialUser.trim()||initialUser.length>8000))throw Error('User prompt file must contain 1..8000 characters');
- const initialDefinition=options.dataset==='automationbench'?automationBaseline(60):structuredClone(BASELINE_DEFINITION);
+ const assets=options.command==='search'&&recommended?(options.resume?await sourceStore.read<any>('prompts/recommended-config.json'):await loadPromptAssets(options.dataset)):undefined;
+ const initialDefinition:GraphDefinition=assets?.definition??(options.dataset==='automationbench'?automationBaseline(60):structuredClone(BASELINE_DEFINITION));
  if(initialUser!==undefined){const solver=initialDefinition.graphs.flatMap(graph=>graph.nodes).find(node=>node.type==='INFER.REASONING.SAMPLE');if(!solver)throw Error('Baseline lacks SAMPLE');solver.config.instruction=initialUser;}
- const benchmark=await loadBenchmark(options.dataset,{dataDir:options.dataDir,split:options.command==='search'?'validate':'test',dataMode:'formal',limit:0,
+ const benchmark=fixture?.benchmark??await loadBenchmark(options.dataset,{dataDir:options.dataDir,split:options.command==='search'?'validate':'test',dataMode:'formal',limit:0,
   ...(options.dataset==='humaneval'||options.dataset==='mbpp'?{codeJudge:new DockerPythonJudge({image:options.dockerImage})}:{}),
   ...(options.dataset==='automationbench'?{artifactDir:store.path('private')}:{})});
- if(!benchmark.identity?.verified||benchmark.tasks.length!==(options.dataset==='automationbench'?(benchmark.split==='validate'?200:600):fixedSplitLock(options.dataset,benchmark.split).count))throw Error('Unified formal evaluation requires the complete pinned split');
+ if(!benchmark.identity?.verified||!fixture&&benchmark.tasks.length!==(options.dataset==='automationbench'?(benchmark.split==='validate'?200:600):fixedSplitLock(options.dataset,benchmark.split).count))throw Error('Unified formal evaluation requires the complete pinned split');
  const repeats=options.command==='search'?5:3;
  const identity={protocol:UNIFIED_FORMAL_PROTOCOL,explorationPolicy:MULTI_WORKER_POLICY,executionIdentity,promptHash:UNIFIED_SYSTEM_PROMPT_SHA256,nodeSystemHash:NODE_SYSTEM_PROMPT_SHA256,initialDefinitionHash:options.command==='search'?artifactHash(initialDefinition):null,model:settings.model,endpoint:settings.baseUrl,generation:GENERATION,
+  ...(recommended&&!options.resume?{initializationProtocol:'dataset-selected-workflow-v1'}:existingManifest?.identity?.initializationProtocol?{initializationProtocol:existingManifest.identity.initializationProtocol}:{}),
+  ...(hashPolicy?{hashPolicy,assets:assets?.manifest??(frozen?.schemaVersion===2?frozen.assets:null)}:{}),...(fixture?{engineeringFixture:fixture.hash,qualityExperiment:false}:{}),...(frozen?.schemaVersion===2?{frozenSelectionHash:frozen.payloadHash}:{}),
   dataset:options.dataset,split:benchmark.split,data:benchmark.identity,taskIds:benchmark.tasks.map(task=>task.id),repeats,timeBudget,
-  ...(options.dataset==='automationbench'?{automation:await automationIdentity()}:{}),
+  ...(options.dataset==='automationbench'&&!fixture?{automation:automationExecution}:{}),
   maxValidEvaluations:options.maxValidEvaluations,maxDesignRounds:options.maxDesignRounds,maxProposalAttempts:options.maxProposalAttempts,seed:options.seed,
   concurrency:options.concurrency,maxCalls:options.maxCalls,maxTokens:options.maxTokens,dockerImage:options.dockerImage};
  if(previousManifest&&artifactHash(previousManifest.identity)!==artifactHash(identity))throw Error('Resume data/runtime/prompt/model/repeat/resource identity differs');
  const manifest:Record<string,unknown>={schemaVersion:1,experiment:'Ditto unified declarative workflow search',createdAt:previousManifest?.createdAt??new Date().toISOString(),status:'preparing',
-  ...identity,providerEnvironment:environment,requestedModel:settings.model,resolvedModelVersion:'not independently verified by this API alias',
+  ...identity,fullSourceIdentity,requestedConfiguration:{initialization:options.command==='test'?'frozen-definition':recommended?'selected-v1':'baseline',source:options.command==='test'?'frozen-selection':'cli'},providerEnvironment:environment,requestedModel:settings.model,resolvedModelVersion:'not independently verified by this API alias',
   protocolDetails:{...PROTOCOL,id:UNIFIED_FORMAL_PROTOCOL,searchPolicy:'program-top4-30pct-uniform-70pct-softmax20',validationRepeats:5,testRepeats:3,
    budgetUnit:'complete-valid-evaluation-including-baseline',qualityPruning:'paired-prefix-all-five-repeats',targetScoreStop:false,
    counterPolicy:'proposal/design/full-valid independent; quality-pruned never parent',protocolDifference:'main data/metrics/repeats retained; search allocation adds declared paired regression pruning'},
@@ -94,6 +133,7 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
  await store.write('prompts/optimizer-system.json',{sha256:UNIFIED_SYSTEM_PROMPT_SHA256,text:UNIFIED_SYSTEM_PROMPT});
  await store.write('prompts/node-systems.json',{sha256:NODE_SYSTEM_PROMPT_SHA256,templates:NODE_SYSTEM_PROMPTS});
  if(initialUser!==undefined)await store.write('prompts/initial-user.json',{text:initialUser,sha256:createHash('sha256').update(initialUser).digest('hex')});
+ if(assets)await store.write('prompts/recommended-config.json',{manifest:assets.manifest,initialization:assets.initialization,definition:assets.definition,optimizerProtocol:'Existing unified complete-definition protocol; not text-replacement admission'});
  if(!previousManifest)await store.snapshot(root);
  if(options.offlineOnly){manifest.status='offline-ready';await store.write('manifest.json',manifest);console.log(JSON.stringify({phase:'offline-ready',directory:store.directory,examples:benchmark.tasks.length,repeats,providerCreated:false}));return;}
  const oldUsage=options.resume?await store.optional<ProviderBudgetSnapshot>('provider-budget.json'):undefined;
@@ -133,9 +173,9 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
    const resume=options.resume?await store.optional<UnifiedSearchState>('search-state.json'):undefined;
    const result=await searchUnifiedWorkflows({runtime:experiment.runtime,model:{provider:experiment.providerName,model:experiment.model},dataset:options.dataset,publicTasks:benchmark.tasks,
     expectedExamples:benchmark.tasks.length,expectedRepeats:5,maxValidEvaluations:options.maxValidEvaluations,maxDesignRounds:options.maxDesignRounds,maxProposalAttempts:options.maxProposalAttempts,
-    seed:options.seed,patience:5,initialDefinition,...(resume?{resume}:{}),evaluate,
+    seed:options.seed,patience:5,initialDefinition,...(assets?{initialization:assets.initialization}:{}),...(resume?{resume}:{}),evaluate,
     save:async state=>store.write('search-state.json',state),event:emit});
-   await freezeBest(sourceStore,result.best,executionIdentity,settings.model,settings.baseUrl,options.dataset);
+   await freezeBest(sourceStore,result.best,executionIdentity,settings.model,settings.baseUrl,options.dataset,hashPolicy?{fullSourceIdentity,assets:assets?.manifest??null,testContract:expectedTest}:undefined);
    manifest.status='search-completed';manifest.stoppedBecause=result.stoppedBecause;manifest.best={id:result.best.id,score:result.best.evaluation.score};
   }
  }catch(error){
@@ -144,7 +184,7 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
   if(options.command==='search'){
    const state=await store.optional<UnifiedSearchState>('search-state.json');
    const best=state?.history.filter((candidate):candidate is UnifiedCandidate=>candidate.status==='valid').sort((a,b)=>b.evaluation.score-a.evaluation.score||a.evaluation.totalTokens-b.evaluation.totalTokens||a.id.localeCompare(b.id))[0];
-   if(best){await freezeBest(sourceStore,best,executionIdentity,settings.model,settings.baseUrl,options.dataset);manifest.best={id:best.id,score:best.evaluation.score};}
+   if(best){await freezeBest(sourceStore,best,executionIdentity,settings.model,settings.baseUrl,options.dataset,hashPolicy?{fullSourceIdentity,assets:assets?.manifest??null,testContract:expectedTest}:undefined);manifest.best={id:best.id,score:best.evaluation.score};}
   }
   if(!budgetExhausted)throw error;
  }finally{
@@ -153,8 +193,8 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
  }
 }
 
-async function freezeBest(store:UnifiedRunStore,best:UnifiedCandidate,executionIdentity:Awaited<ReturnType<typeof evaluationRuntimeIdentity>>,model:string,endpoint:string,dataset:DatasetName):Promise<void>{
- const frozen:FrozenSelection={schemaVersion:1,selectedBeforeTest:true,id:best.id,definition:best.definition,artifactHash:artifactHash(best.definition),executionIdentity,
+async function freezeBest(store:UnifiedRunStore,best:UnifiedCandidate,executionIdentity:Awaited<ReturnType<typeof evaluationRuntimeIdentity>>,model:string,endpoint:string,dataset:DatasetName,extended?:{fullSourceIdentity:Awaited<ReturnType<typeof evaluationRuntimeIdentity>>;assets:Record<string,any>|null;testContract:ReturnType<typeof testContract>}):Promise<void>{
+ const frozen:FrozenSelection|FrozenV2=extended?createFrozenV2({sourceKind:extended.testContract.mode==='engineering-fixture'?'engineering-fixture-search':'formal-search-selection',id:best.id,dataset,definition:best.definition,executionIdentity,model,endpoint,...extended,source:{protocol:UNIFIED_FORMAL_PROTOCOL,candidateId:best.id,revision:executionIdentity.sourceSha256,recordHash:artifactHash(best),definitionHash:artifactHash(best.definition)}}):{schemaVersion:1,selectedBeforeTest:true,id:best.id,definition:best.definition,artifactHash:artifactHash(best.definition),executionIdentity,
   promptHash:UNIFIED_SYSTEM_PROMPT_SHA256,model,endpoint,generation:GENERATION,dataset,protocol:UNIFIED_FORMAL_PROTOCOL};
  await store.write('frozen-selection.json',frozen);await store.write('best/candidate.json',best.definition);await store.write('best/validation-summary.json',best.evaluation);
 }
