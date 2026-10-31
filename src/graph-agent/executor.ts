@@ -127,6 +127,8 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
  };
  const bind=(node:DefinitionNode,available:Record<string,any>,previous:Record<string,any>,snapshot:Record<string,any>):any=>{
   const c=node.config,get=(s:any)=>resolve(s,available,previous,snapshot),metadata={experiment:GRAPH_AGENT_POLICY,nodeType:node.type,nodeId:node.id,taskId:task.id,dataset:task.dataset,systemVersion:NODE_SYSTEM_VERSION};
+  const context=()=>{const value=get(c.context);if(!value||typeof value!=='object'||Array.isArray(value)||!Array.isArray(value.items))throw new AgentContractError('config.context must resolve to the complete Context object {items:[...]}, not its items array. Use a context view, ref:["nodes",loadId], or ref:["nodes",selectId,"context"].',node.id);return value;};
+  const memoryIds=()=>{const value=get(c.ids);if(!Array.isArray(value)||value.some(id=>typeof id!=='string'||!id.trim()))throw new AgentContractError('config.ids must resolve to an array of nonempty Memory ID strings, not Memory records or one scalar ID. Use {from:"node",nodeId:writeId,view:"memory-ids"} or [{ref:["nodes",writeId,0,"id"]}].',node.id);return value;};
   const evidence=()=>presentEvidence(c.evidence??[],(c.evidence??[]).map((s:Source)=>get(s)),definition.graphs);
   const artifactSources=()=>JSON.stringify({target:c.target?evidenceSources(c.target,definition.graphs):undefined,candidates:c.candidates?.map((s:Source,i:number)=>({id:`candidate-${i}`,sources:evidenceSources(s,definition.graphs)})),user:c.user?evidenceSources(c.user,definition.graphs):undefined});
   const extra=()=>c.user===undefined?'':asText(get(c.user));
@@ -134,12 +136,12 @@ export async function runGraphAgent(inputDefinition:GraphDefinition,task:Benchma
   const userMessages=()=>[{role:'user' as const,content:`Original task:\n${task.prompt}\n\nNode instruction:\n${c.instruction??''}\n\nArtifact provenance (identity, not proof of correctness):\n${artifactSources()}\n\nAdditional user material:\n${extra()}\n\nTask output requirements:\n${taskOutputRequirements(task)}${format()}`}];
   switch(node.type){
    case'CONTEXT.LOAD':return{sources:c.sources.map((s:Source,i:number)=>({id:`${node.id}-source-${i}`,content:get(s)}))};
-   case'CONTEXT.SELECT':return{context:get(c.context),purpose:'infer',strategy:{kind:'default'},...(c.query!==undefined?{query:asText(get(c.query))}:{}),...(c.limit?{limit:c.limit}:{}),...(c.maxTokens?{maxTokens:c.maxTokens}:{})};
-   case'CONTEXT.UPDATE':return{context:get(c.context),...(c.add!==undefined?{add:[{id:`${node.id}-added`,content:get(c.add)}]}:{}),removeIds:c.removeIds??[]};
-   case'CONTEXT.COMPRESS':return{context:get(c.context),...(c.maxItems?{maxItems:c.maxItems}:{}),...(c.maxTokens?{maxTokens:c.maxTokens}:{})};
+   case'CONTEXT.SELECT':return{context:context(),purpose:'infer',strategy:{kind:'default'},...(c.query!==undefined?{query:asText(get(c.query))}:{}),...(c.limit?{limit:c.limit}:{}),...(c.maxTokens?{maxTokens:c.maxTokens}:{})};
+   case'CONTEXT.UPDATE':return{context:context(),...(c.add!==undefined?{add:[{id:`${node.id}-added`,content:get(c.add)}]}:{}),removeIds:c.removeIds??[]};
+   case'CONTEXT.COMPRESS':return{context:context(),...(c.maxItems?{maxItems:c.maxItems}:{}),...(c.maxTokens?{maxTokens:c.maxTokens}:{})};
    case'MEMORY.WRITE':return{memories:[{key:node.id,content:get(c.content)}]};
-   case'MEMORY.GET':case'MEMORY.DELETE':return{ids:get(c.ids)};
-   case'MEMORY.UPDATE':{const ids=get(c.ids);if(!Array.isArray(ids))throw new AgentContractError('Memory UPDATE ids must be an array',node.id);return{memories:ids.map((id:string)=>({id,content:get(c.content)}))};}
+   case'MEMORY.GET':case'MEMORY.DELETE':return{ids:memoryIds()};
+   case'MEMORY.UPDATE':return{memories:memoryIds().map((id:string)=>({id,content:get(c.content)}))};
    case'MEMORY.SEARCH':return{query:asText(get(c.query)),limit:c.limit??3};
    case'MEMORY.QUERY':return{filter:c.filter??{},limit:c.limit??3};
    case'INFER.CACHE.LOOKUP':case'INFER.CACHE.INVALIDATE':case'INFER.CACHE.WRITE':{const key={scope:'sample',key:asText(get(c.key))};return node.type.endsWith('INVALIDATE')?{selector:{type:'key',key}}:node.type.endsWith('WRITE')?{key,value:get(c.value),...(c.ttlMs?{ttlMs:c.ttlMs}:{})}:{key};}

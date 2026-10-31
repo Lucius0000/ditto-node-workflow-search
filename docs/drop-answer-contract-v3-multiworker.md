@@ -54,7 +54,7 @@ npm run validate:drop:contract -- --data-dir DATA --output NEW_DIRECTORY --previ
 ```
 
 The small run reserves up to 100 model calls / 140,000 tokens for each search
-bucket, up to three same-direction proposal repairs, 24 Search questions per
+bucket, up to three proposal attempts per direction (two repairs), 24 Search questions per
 candidate once, and a separate 12-question panel twice for baseline and frozen
 winner. There are four direction designs and at most five complete candidates
 including baseline. The old winning definition is separately rerun on seven

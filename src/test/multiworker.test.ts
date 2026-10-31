@@ -9,6 +9,9 @@ import {searchUnifiedWorkflows} from '../unified/search.js';
 import type {BenchmarkTask,EvaluationSummary} from '../domain.js';
 import {DROP_ANSWER_CONTRACT} from '../benchmark/answer-contract.js';
 import {createExperimentRuntime} from '../ditto/runtime.js';
+import {runGraphAgent} from '../graph-agent/executor.js';
+import {UnifiedEvaluationError} from '../unified/evaluation.js';
+import {UNIFIED_DEFINITION_GUIDE} from '../unified/prompts.js';
 
 const task:BenchmarkTask={id:'public-fixture',dataset:'drop',prompt:'Public passage and question',outputInstruction:'',metadata:{}};
 function summary(definition:GraphDefinition):EvaluationSummary&{publicTraces:unknown[]}{return{valid:true,score:.5,standardDeviation:0,repeats:1,examples:1,successfulRuns:1,failedRuns:0,wrongRuns:0,timeoutRuns:0,inputTokens:1,outputTokens:1,totalTokens:2,durationMs:0,
@@ -41,6 +44,41 @@ test('evidence labels retain both producer identities and values without mutatin
  const values=[[{content:'A public fact'}],'42'],before=structuredClone(values);
  const text=presentEvidence(bindings,values,d.graphs);
  assert.match(text,/"nodeId":"context"/);assert.match(text,/"nodeType":"CONTEXT.LOAD"/);assert.match(text,/"nodeId":"solve"/);assert.match(text,/A public fact/);assert.match(text,/42/);assert.deepEqual(values,before);
+});
+
+test('native collection binding mistakes retain concrete public repair errors before model calls',async()=>{
+ const settings={baseUrl:'https://example.invalid',apiKey:'offline',model:'mock',concurrency:1,timeoutMs:1000};let calls=0;
+ const shared=createExperimentRuntime(settings,{provider:{async invoke(){calls++;return{message:{role:'assistant',content:'ok'},finishReason:'stop'};}}});
+ try{
+  const wrongContext=child('context-retrieval');wrongContext.graphs[0]!.nodes.find(n=>n.id==='selected')!.config.context={ref:['nodes','context','items']};
+  const wrongRecords=structuredClone(BASELINE_DEFINITION),solve=wrongRecords.graphs[0]!.nodes[1]!;
+  wrongRecords.graphs[0]!.nodes.splice(1,0,{id:'remember',type:'MEMORY.WRITE',dependencies:['context'],config:{content:{ref:['nodes','context','items']}}},{id:'recall',type:'MEMORY.GET',dependencies:['remember'],config:{ids:{ref:['nodes','remember']}}});
+  wrongRecords.mutation={primaryNodeId:'remember',auxiliary:[{nodeId:'recall',reason:'Read the public passage written by remember'}]};
+  solve.dependencies=['recall'];solve.config.evidence=[{ref:['nodes','recall']}];
+  const missingId=structuredClone(wrongRecords);missingId.graphs[0]!.nodes.find(n=>n.id==='recall')!.config.ids={ref:['nodes','remember','id']};
+  for(const [definition,expected]of [[wrongContext,/config.context must resolve to the complete Context object/],[wrongRecords,/config.ids must resolve to an array/],[missingId,/Required binding path is absent: id/]] as const){
+   await assert.rejects(runGraphAgent(definition,task,shared,settings),(error:any)=>{
+    const wrapped=new UnifiedEvaluationError('Invalid execution',{failureKind:'execution'} as any,error);
+    assert.match(wrapped.publicMessage,expected);assert.match(wrapped.publicIssue.path,/nodes\.(selected|recall)/);assert.equal(wrapped.infrastructureFailure,false);return true;
+   });
+  }
+  assert.equal(calls,0);
+  // The documented ID projection must continue to work without host coercion.
+  const repaired=structuredClone(wrongRecords);repaired.graphs[0]!.nodes.find(n=>n.id==='recall')!.config.ids={from:'node',nodeId:'remember',view:'memory-ids'};
+  const result=await runGraphAgent(repaired,task,shared,settings);assert.equal(result.answer,'ok');assert.equal(calls,1);assert.equal(result.nodeInputs.recall.ids.length,1);
+ }finally{await shared.close();}
+});
+
+test('the optimizer guide names the registered arithmetic result and its executable string projection',async()=>{
+ assert.match(UNIFIED_DEFINITION_GUIDE,/structuredContent \{result:number\}/);
+ const settings={baseUrl:'https://example.invalid',apiKey:'offline',model:'mock',concurrency:1,timeoutMs:3000};
+ const shared=createExperimentRuntime(settings,{provider:{async invoke(){throw Error('This workflow must not call a model');}}});
+ try{
+  const definition=structuredClone(BASELINE_DEFINITION),node=definition.graphs[0]!.nodes[1]!;
+  node.type='INTERACTION.ACT.TOOL';node.config={tool:'bounded_arithmetic',arguments:{expression:{literal:'1.5 - 1.0'}}};
+  definition.output={answer:{json:{ref:['nodes','solve','structuredContent','result']}}};
+  const result=await runGraphAgent(definition,task,shared,settings);assert.equal(result.answer,'0.5');assert.equal(result.rawNodeOutputs.solve.structuredContent.result,.5);
+ }finally{await shared.close();}
 });
 
 test('reserved direction requires a changed native worker and rejects SAMPLE growth',()=>{
