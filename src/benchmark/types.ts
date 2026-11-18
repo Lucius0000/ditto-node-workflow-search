@@ -26,7 +26,7 @@ export interface BenchmarkLoadOptions {
 
 /** Public provenance only: no reference answers or private judge material. */
 export interface BenchmarkIdentity {
-  readonly protocol: "aflow-fixed-v1" | "fixture" | "automationbench-public-simple-v1" | "bfcl-multiturn-family-v1";
+  readonly protocol: "aflow-fixed-v1" | "fixture" | "automationbench-public-simple-v1" | "automationbench-balanced-public-v2" | "bfcl-multiturn-family-v1";
   readonly dataMode: "formal" | "fixture";
   readonly baselineRepository: string;
   readonly baselineCommit: string;

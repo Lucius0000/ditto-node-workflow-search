@@ -1,0 +1,451 @@
+{
+  "protocol": "automationbench-balanced-public-v2",
+  "seed": 20261118,
+  "upstreamRevision": "4a8e1061254004d9dac807054eed33fad7d1ff14",
+  "sourceHashes": [
+    "926b0d17a075f71a4851f505bc23c02fb982bb6e01e12506db8a605f40033354",
+    "fdc0c83b9c1275d8809d28d5c3300e0f38a8b0a8ae2e23eb7700c7195f323331"
+  ],
+  "splitHashes": {
+    "search": "285655c3f4561d8020883d04771891a8b4c1cb0c97332d626f194687f79e2b6d",
+    "test": "de492323ceafd4fbf8d7d5f87ebdadbe182b1160d7e27dea3acb1a66dfd19f11"
+  },
+  "counts": {
+    "search": 200,
+    "test": 600
+  },
+  "domains": {
+    "finance": {
+      "total": 100,
+      "search": 25,
+      "test": 75,
+      "familyCount": 100,
+      "balanceCost": 0.9961159826594761,
+      "features": {
+        "calculation": {
+          "search": 18,
+          "test": 57
+        },
+        "conditional": {
+          "search": 3,
+          "test": 10
+        },
+        "cross_app": {
+          "search": 5,
+          "test": 19
+        },
+        "entity": {
+          "search": 24,
+          "test": 71
+        },
+        "evidence": {
+          "search": 21,
+          "test": 57
+        },
+        "high": {
+          "search": 7,
+          "test": 26
+        },
+        "low": {
+          "search": 10,
+          "test": 24
+        },
+        "medium": {
+          "search": 8,
+          "test": 25
+        },
+        "policy": {
+          "search": 7,
+          "test": 24
+        },
+        "recency": {
+          "search": 7,
+          "test": 20
+        },
+        "temporal": {
+          "search": 2,
+          "test": 7
+        },
+        "verification": {
+          "search": 12,
+          "test": 32
+        },
+        "write": {
+          "search": 14,
+          "test": 42
+        }
+      }
+    },
+    "hr": {
+      "total": 100,
+      "search": 25,
+      "test": 75,
+      "familyCount": 100,
+      "balanceCost": 0.910282126006224,
+      "features": {
+        "calculation": {
+          "search": 10,
+          "test": 28
+        },
+        "conditional": {
+          "search": 1,
+          "test": 3
+        },
+        "cross_app": {
+          "search": 14,
+          "test": 42
+        },
+        "entity": {
+          "search": 19,
+          "test": 68
+        },
+        "evidence": {
+          "search": 17,
+          "test": 50
+        },
+        "high": {
+          "search": 8,
+          "test": 25
+        },
+        "low": {
+          "search": 9,
+          "test": 25
+        },
+        "medium": {
+          "search": 8,
+          "test": 25
+        },
+        "policy": {
+          "search": 9,
+          "test": 32
+        },
+        "recency": {
+          "search": 14,
+          "test": 41
+        },
+        "temporal": {
+          "search": 4,
+          "test": 17
+        },
+        "verification": {
+          "search": 11,
+          "test": 35
+        },
+        "write": {
+          "search": 21,
+          "test": 65
+        }
+      }
+    },
+    "marketing": {
+      "total": 100,
+      "search": 25,
+      "test": 75,
+      "familyCount": 100,
+      "balanceCost": 0.6499075001182962,
+      "features": {
+        "calculation": {
+          "search": 10,
+          "test": 38
+        },
+        "conditional": {
+          "search": 2,
+          "test": 7
+        },
+        "cross_app": {
+          "search": 14,
+          "test": 45
+        },
+        "entity": {
+          "search": 18,
+          "test": 50
+        },
+        "evidence": {
+          "search": 19,
+          "test": 57
+        },
+        "high": {
+          "search": 8,
+          "test": 25
+        },
+        "low": {
+          "search": 9,
+          "test": 25
+        },
+        "medium": {
+          "search": 8,
+          "test": 25
+        },
+        "policy": {
+          "search": 12,
+          "test": 37
+        },
+        "recency": {
+          "search": 12,
+          "test": 38
+        },
+        "temporal": {
+          "search": 3,
+          "test": 10
+        },
+        "verification": {
+          "search": 8,
+          "test": 26
+        },
+        "write": {
+          "search": 20,
+          "test": 65
+        }
+      }
+    },
+    "operations": {
+      "total": 100,
+      "search": 25,
+      "test": 75,
+      "familyCount": 100,
+      "balanceCost": 0.5791202748462038,
+      "features": {
+        "calculation": {
+          "search": 9,
+          "test": 33
+        },
+        "conditional": {
+          "search": 9,
+          "test": 30
+        },
+        "cross_app": {
+          "search": 20,
+          "test": 62
+        },
+        "entity": {
+          "search": 21,
+          "test": 67
+        },
+        "evidence": {
+          "search": 25,
+          "test": 73
+        },
+        "high": {
+          "search": 8,
+          "test": 25
+        },
+        "low": {
+          "search": 8,
+          "test": 26
+        },
+        "medium": {
+          "search": 9,
+          "test": 24
+        },
+        "policy": {
+          "search": 15,
+          "test": 44
+        },
+        "recency": {
+          "search": 9,
+          "test": 26
+        },
+        "temporal": {
+          "search": 10,
+          "test": 26
+        },
+        "verification": {
+          "search": 22,
+          "test": 64
+        },
+        "write": {
+          "search": 24,
+          "test": 72
+        }
+      }
+    },
+    "sales": {
+      "total": 100,
+      "search": 25,
+      "test": 75,
+      "familyCount": 100,
+      "balanceCost": 1.097116424412647,
+      "features": {
+        "calculation": {
+          "search": 10,
+          "test": 37
+        },
+        "conditional": {
+          "search": 4,
+          "test": 8
+        },
+        "cross_app": {
+          "search": 13,
+          "test": 41
+        },
+        "entity": {
+          "search": 15,
+          "test": 44
+        },
+        "evidence": {
+          "search": 13,
+          "test": 39
+        },
+        "high": {
+          "search": 8,
+          "test": 25
+        },
+        "low": {
+          "search": 8,
+          "test": 26
+        },
+        "medium": {
+          "search": 9,
+          "test": 24
+        },
+        "policy": {
+          "search": 11,
+          "test": 31
+        },
+        "recency": {
+          "search": 9,
+          "test": 24
+        },
+        "temporal": {
+          "search": 7,
+          "test": 16
+        },
+        "verification": {
+          "search": 8,
+          "test": 23
+        },
+        "write": {
+          "search": 18,
+          "test": 55
+        }
+      }
+    },
+    "simple": {
+      "total": 200,
+      "search": 50,
+      "test": 150,
+      "familyCount": 191,
+      "balanceCost": 0.8501689629239843,
+      "features": {
+        "calculation": {
+          "search": 6,
+          "test": 21
+        },
+        "conditional": {
+          "search": 3,
+          "test": 8
+        },
+        "cross_app": {
+          "search": 34,
+          "test": 104
+        },
+        "entity": {
+          "search": 19,
+          "test": 54
+        },
+        "evidence": {
+          "search": 30,
+          "test": 96
+        },
+        "high": {
+          "search": 17,
+          "test": 49
+        },
+        "low": {
+          "search": 16,
+          "test": 51
+        },
+        "medium": {
+          "search": 17,
+          "test": 50
+        },
+        "recency": {
+          "search": 1,
+          "test": 5
+        },
+        "temporal": {
+          "search": 15,
+          "test": 36
+        },
+        "verification": {
+          "search": 5,
+          "test": 14
+        },
+        "write": {
+          "search": 48,
+          "test": 142
+        }
+      }
+    },
+    "support": {
+      "total": 100,
+      "search": 25,
+      "test": 75,
+      "familyCount": 100,
+      "balanceCost": 0.9063495416653795,
+      "features": {
+        "calculation": {
+          "search": 15,
+          "test": 44
+        },
+        "conditional": {
+          "search": 4,
+          "test": 13
+        },
+        "cross_app": {
+          "search": 22,
+          "test": 62
+        },
+        "entity": {
+          "search": 16,
+          "test": 53
+        },
+        "evidence": {
+          "search": 24,
+          "test": 64
+        },
+        "high": {
+          "search": 8,
+          "test": 25
+        },
+        "low": {
+          "search": 9,
+          "test": 25
+        },
+        "medium": {
+          "search": 8,
+          "test": 25
+        },
+        "policy": {
+          "search": 12,
+          "test": 35
+        },
+        "recency": {
+          "search": 1,
+          "test": 6
+        },
+        "temporal": {
+          "search": 2,
+          "test": 4
+        },
+        "verification": {
+          "search": 8,
+          "test": 26
+        },
+        "write": {
+          "search": 22,
+          "test": 66
+        }
+      }
+    }
+  },
+  "annotationMethod": "public-prompt lexical complexity proxy; within-domain thirds; not empirical or expert-validated difficulty",
+  "groupMethod": "explicit simple.email_sf_contact_*_update family plus connected components of public user-prompt token-set Jaccard >= 0.70; no family crosses splits",
+  "limitations": [
+    "Semantic paraphrase leakage is not ruled out by lexical grouping.",
+    "Public tasks have prior execution and manual-review exposure; not a fresh blind test.",
+    "Simple is included in this custom protocol; blended score is not the official benchmark score."
+  ],
+  "usesOutcomes": false,
+  "historicalCheckpointsReusable": false
+}

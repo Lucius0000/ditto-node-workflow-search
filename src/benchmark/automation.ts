@@ -20,6 +20,13 @@ export const AUTOMATION_TOOLS = ["api_search", "api_fetch", "base64_encode"] as 
 const REVISION = "4a8e1061254004d9dac807054eed33fad7d1ff14";
 const LOCK_HASH = "c7d275af5ad98caa7058edce5806281a340f63781cdff3062622c9c0d5d7c521";
 const SPLIT_HASHES = { validate: "926b0d17a075f71a4851f505bc23c02fb982bb6e01e12506db8a605f40033354", test: "fdc0c83b9c1275d8809d28d5c3300e0f38a8b0a8ae2e23eb7700c7195f323331" };
+const BALANCED_SPLIT_HASHES = { validate: "285655c3f4561d8020883d04771891a8b4c1cb0c97332d626f194687f79e2b6d", test: "de492323ceafd4fbf8d7d5f87ebdadbe182b1160d7e27dea3acb1a66dfd19f11" };
+
+export function automationSplitProtocol(hash: string, split: "validate" | "test") {
+  if (hash === SPLIT_HASHES[split]) return "automationbench-public-simple-v1" as const;
+  if (hash === BALANCED_SPLIT_HASHES[split]) return "automationbench-balanced-public-v2" as const;
+  throw new Error("AutomationBench split bytes differ from both pinned protocol manifests");
+}
 
 /** Only public tool access is placed in actor scope; world/rubric operations stay private. */
 export interface AutomationSession {
@@ -296,13 +303,13 @@ export const automationAdapter: BenchmarkAdapter = Object.freeze({
     if (options.limit || options.dataMode === "fixture") throw new Error("Automation formal evaluation requires the complete pinned split without sampling");
     const path = join(options.dataDir, options.split === "validate" ? "search.jsonl" : "test.jsonl");
     const bytes=await readFile(path),rawSha256=createHash('sha256').update(bytes).digest('hex');
-    if (rawSha256 !== SPLIT_HASHES[options.split]) throw new Error("AutomationBench split bytes differ from the frozen MFlow manifest");
+    const protocol = automationSplitProtocol(rawSha256, options.split);
     const rows = bytes.toString('utf8').split(/\r?\n/).filter(line=>line.trim()).map((line,index):BenchmarkTask => {
       const value:unknown=JSON.parse(line),row=index+1;
       const raw = requireRecord(value, path, row);
       const dataset = requireRecord(raw.dataset, path, row);
       const reference = requireRecord(raw.reference, path, row);
-      if (dataset.protocol !== "automationbench-public-simple-v1" || dataset.split !== (options.split === "validate" ? "search" : "test")) throw new Error("AutomationBench split protocol mismatch");
+      if (dataset.protocol !== protocol || dataset.split !== (options.split === "validate" ? "search" : "test")) throw new Error("AutomationBench split protocol mismatch");
       const taskId = requireString(reference.automationTaskId, "automationTaskId", path, row);
       const id = requireString(raw.id, "id", path, row);
       if (id !== `automationbench:${taskId}`) throw new Error("AutomationBench public task ID mismatch");
@@ -311,7 +318,7 @@ export const automationAdapter: BenchmarkAdapter = Object.freeze({
     if(options.limit)throw Error('Automation formal evaluation uses the complete pinned split');
     if(rows.length!==(options.split==='validate'?200:600)||new Set(rows.map(t=>t.id)).size!==rows.length)throw Error('Automation count/IDs differ from the fixed split');
     const tasks = Object.freeze(rows);
-    const identity={protocol:'automationbench-public-simple-v1' as const,dataMode:'formal' as const,baselineRepository:'https://github.com/erwinmsmith/MFlow',baselineCommit:'437040f17a17cbf430f3f41227ca64c576cf1056',upstreamCommit:REVISION,sourceFile:path,rawSha256,sourceCount:rows.length,selectedCount:rows.length,splitRole:options.split==='validate'?'search' as const:'test' as const,verified:true,knownPromptOverlaps:[]};
+    const identity={protocol,dataMode:'formal' as const,baselineRepository:protocol==='automationbench-balanced-public-v2'?'https://github.com/lifanghen-ux/ditto-node-workflow-search':'https://github.com/erwinmsmith/MFlow',baselineCommit:protocol==='automationbench-balanced-public-v2'?'automationbench-balanced-public-v2':'437040f17a17cbf430f3f41227ca64c576cf1056',upstreamCommit:REVISION,sourceFile:path,rawSha256,sourceCount:rows.length,selectedCount:rows.length,splitRole:options.split==='validate'?'search' as const:'test' as const,verified:true,knownPromptOverlaps:[]};
     const evaluate = async (selectedTasks: readonly BenchmarkTask[], runner: BenchmarkRunner, evaluationOptions?: BenchmarkEvaluationOptions) => {
         const bridge = await AutomationBridge.open();
         const snapshots = new Map<string, SavedExecution>();
