@@ -61,6 +61,8 @@ export function officialArtifactHash(d:AgentDefinition,tools:readonly ToolDefini
 export function expandedOfficialNodes(d:AgentDefinition){const c=compileAgent(d);return Object.entries(c.graphs).flatMap(([graph,g])=>g.tasks.map(n=>({id:`${graph}/${n.id}`,type:String(n.node),dependencies:n.dependencies.map(dep=>`${graph}/${dep}`)})));}
 export const OFFICIAL_MUTATION_LIMITS=Object.freeze({policy:'one-functional-node-prompts-separate-v3',maxFunctionalNodeChanges:1,maxAddedCompanions:0,maxDeclaredNodes:24,maxToolChanges:1,
  counting:'added + removed + functional modifications <= 1; preserve ID when replacing a node; user prompt changes and necessary reference/dependency wiring do not count',promptChangesCountAsFunctional:false,promptScope:'Infer user messages and objective; system remains frozen; tool arguments, native strategy and constraints remain functional',dependencyEdgeEdits:'max(12,4*N), N=max(parent,child nodes); reversal costs two'});
+export const BFCL_MUTATION_LIMITS=Object.freeze({...OFFICIAL_MUTATION_LIMITS,policy:'bfcl-three-functional-nodes-per-proposal-v1',
+ maxFunctionalNodeChanges:3,maxAddedCompanions:2,counting:'added + removed + functional modifications <= 3 per proposal against the same measured round parent'});
 const OMIT=Symbol('wiring');
 /** Separate reference wiring from literal prompts/operations; native validation still freezes host bindings. */
 function functionalInput(value:any):any{
@@ -103,13 +105,12 @@ export function officialMutationDiff(parent:AgentDefinition,child:AgentDefinitio
  const wiringOnly=retained.filter(n=>!modified.includes(n.id)&&!promptChanges.includes(n.id)&&digest(n.node)!==digest(old.get(n.id)!.node)).map(n=>n.id);
  return{added,removed,modified,wiringOnly,promptChanges,count:added.length+removed.length+modified.length};
 }
-export function validateOfficialChange(parent:AgentDefinition,child:AgentDefinition,mutation?:MutationExplanation,parentTools:readonly ToolDefinition[]=[],childTools:readonly ToolDefinition[]=[]):void{
+export function validateOfficialChange(parent:AgentDefinition,child:AgentDefinition,mutation?:MutationExplanation,parentTools:readonly ToolDefinition[]=[],childTools:readonly ToolDefinition[]=[],limits:typeof OFFICIAL_MUTATION_LIMITS|typeof BFCL_MUTATION_LIMITS=OFFICIAL_MUTATION_LIMITS):void{
  validateOfficialDefinition(child,childTools);
- if(mutation!==undefined)mutation=validateMutationExplanation(mutation);
+ if(mutation!==undefined)mutation=validateMutationExplanation(mutation,'/mutation',limits.maxAddedCompanions);
  const diff=officialMutationDiff(parent,child);
- check(diff.count<=1,`Functional node limit exceeded: allowed=1 actual=${diff.count}; added=${JSON.stringify(diff.added)}; removed=${JSON.stringify(diff.removed)}; modified=${JSON.stringify(diff.modified)}; wiringOnly=${JSON.stringify(diff.wiringOnly)}; promptChangesExcluded=${JSON.stringify(diff.promptChanges)}`,'/mutation',
-  'Keep exactly one added, removed or functionally modified node. Replace a node under its existing ID. Restore all other functional edits; user prompt edits and necessary dependsOn/reference wiring are separate. Do not restore or remove valid user prompt improvements to satisfy this limit. Do not fix this by editing mutation metadata.');
- check(!mutation?.auxiliary.length,'Companion additions are disabled: allowed=0; single functional node limit=1','/mutation/auxiliary','Use auxiliary:[]; stage companion additions in later candidates.');
+ check(diff.count<=limits.maxFunctionalNodeChanges,`Functional node limit exceeded: allowed=${limits.maxFunctionalNodeChanges} actual=${diff.count}; added=${JSON.stringify(diff.added)}; removed=${JSON.stringify(diff.removed)}; modified=${JSON.stringify(diff.modified)}; wiringOnly=${JSON.stringify(diff.wiringOnly)}; promptChangesExcluded=${JSON.stringify(diff.promptChanges)}`,'/mutation',
+  'Keep the allowed number of added, removed or functionally modified nodes. Preserve IDs for replacements. User prompt edits and necessary wiring are separate.');
  const edgeSet=(d:AgentDefinition)=>new Set(expandedOfficialNodes(d).flatMap(n=>n.dependencies.map(dep=>`${dep}->${n.id}`))),a=edgeSet(parent),b=edgeSet(child);
  const removedEdges=[...a].filter(e=>!b.has(e)),addedEdges=[...b].filter(e=>!a.has(e)),edgeLimit=dependencyEditBudget(Math.max(expandedOfficialNodes(parent).length,expandedOfficialNodes(child).length,1));
  check(removedEdges.length+addedEdges.length<=edgeLimit,`Expanded dependency edit budget exceeded: allowed=${edgeLimit} actual=${removedEdges.length+addedEdges.length}; added=${JSON.stringify(addedEdges)}; removed=${JSON.stringify(removedEdges)}`,'/graphs','Restore excess dependency changes; a reversal counts as removal plus addition.');

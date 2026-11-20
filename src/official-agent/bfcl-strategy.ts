@@ -8,9 +8,15 @@ Before choosing another action, inspect the prior executed business function nam
 A raw observation such as "None" or null may be a documented void return from a state-changing function. It is not automatically a failure or a success: consult that function's public schema/description and, when genuinely uncertain, use a useful read-only verification rather than repeating the same write.
 Once a lookup returns the requested information, answer the current request using that information. A pending/open/incomplete business status is a result to report truthfully, not a reason to poll indefinitely unless the public request explicitly requires waiting and there is a supported reason to expect new information.
 If a business operation returns an error, use the actual error to correct the request or submit a truthful limitation. Do not retry unchanged arguments under unchanged conditions merely because the desired result was absent. Do not recreate or rewrite resources after observing the requested operation already happened.
-When the current request has been handled, submit its reply through bfcl_respond as well. Final text or a done marker does not submit a turn. Do not claim unexecuted actions succeeded.
-bfcl_call arguments are {"turn":currentTurn,"calls":[{"name":"actual_available_function","arguments":{...}}]}. bfcl_respond arguments are {"turn":currentTurn,"message":"truthful current-turn reply"}.
-Return strict JSON {"done":false,"tool":"bfcl_state|bfcl_call|bfcl_respond","arguments":{...}}. Only return {"done":true,"tool":"","arguments":{}} after an official observation reports complete:true. Do not end the whole conversation merely because the current turn is blocked.`;
+When the current request has been handled, submit its reply through bfcl_respond as well. Final text or a done marker does not submit a turn. Do not claim unexecuted actions succeeded.`;
+
+/** The host supplies this contract after resolving candidate messages. */
+export const BFCL_ACTION_CONTRACT=`Fixed BFCL action contract. This governs the next action regardless of candidate strategy or hints.
+The action must be one strict JSON object with done, tool, and arguments. SAMPLE returns it directly. In a REFLECT revision, preserve the REFLECT envelope and put the action in revisedResult.content. For a tool action, use done=false and select one of bfcl_state, bfcl_call, or bfcl_respond.
+Read state: {"done":false,"tool":"bfcl_state","arguments":{}}.
+Call a revealed business function through {"done":false,"tool":"bfcl_call","arguments":{"turn":0,"calls":[{"name":"available_function","arguments":{}}]}}. Use the actual current turn and function schema.
+Submit a current-turn reply, including a missing function or parameter reply, through {"done":false,"tool":"bfcl_respond","arguments":{"turn":0,"message":"current-turn reply"}}. This can reveal another turn. Never combine bfcl_respond with done=true.
+The session finishes when its public observation reports complete:true. Final answer text alone cannot submit a turn.`;
 
 /** Separate host runaway guard; official per-turn business-call limits stay in the environment. */
 export const BFCL_HOST_GRAPH_RUN_LIMIT = 1024;

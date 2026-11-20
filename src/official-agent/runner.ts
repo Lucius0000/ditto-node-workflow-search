@@ -9,7 +9,7 @@ import {createExperimentRuntime} from '../ditto/runtime.js';
 import {runOfficialAgent} from './executor.js';
 import {generatedTools} from '../graph-agent/tools.js';
 import type {ToolDefinition} from '../graph-agent/schema.js';
-import {officialBaseline} from './baselines.js';
+import {officialBaseline,validateBfclSearchGraph} from './baselines.js';
 import {loadOfficialInitialization,type OfficialInitializationSelection} from './initialization.js';
 import {bfclIdentity} from '../benchmark/bfcl.js';
 import {validateOfficialDefinition as validateDefinition,officialArtifactHash,type OfficialAgentDefinition as GraphDefinition} from './schema.js';
@@ -52,6 +52,12 @@ export function providerEnvironment(projectRoot:string):Readonly<Record<string,s
  return {...environment,nodeVersion:process.version,dittoVersion:pkg.version};
 }
 
+/** Validate a standard workflow load without opening a dataset or creating a provider. */
+export function validateFrozenWorkflow(dataset:DatasetName,definition:GraphDefinition,tools?:readonly ToolDefinition[]):void{
+ const validated=validateDefinition(definition,tools);
+ if(dataset==='bfcl')validateBfclSearchGraph(validated);
+}
+
 /** Search and Test use different directories and never send Test observations to the optimizer. */
 export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<void>{
  if(options.command==='test'&&options.initialDefinition)throw Error('Test cannot replace its frozen selection with a new initial definition');
@@ -71,7 +77,7 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
   assertEvaluationRuntimeIdentity(frozen.executionIdentity,executionIdentity);
   if(artifactHash(frozen.officialEnvironment)!==artifactHash(officialEnvironment))throw Error('Frozen official benchmark environment differs');
   if(frozen.promptHash!==UNIFIED_SYSTEM_PROMPT_SHA256||frozen.model!==settings.model||frozen.endpoint!==settings.baseUrl||JSON.stringify(frozen.generation)!==JSON.stringify(GENERATION)||frozen.artifactHash!==officialArtifactHash(frozen.definition,frozen.toolArtifacts))throw Error('Frozen candidate/model/prompt identity differs');
-  validateDefinition(frozen.definition,frozen.toolArtifacts);
+  validateFrozenWorkflow(frozen.dataset,frozen.definition,frozen.toolArtifacts);
  }
  const previousManifest=await store.optional<Record<string,unknown>>('manifest.json');
  if(previousManifest&&!options.resume)throw Error('Run directory exists; use --resume true or a new --output-dir');
@@ -87,7 +93,7 @@ export async function runUnifiedExperiment(options:UnifiedCLIOptions):Promise<vo
  if(initialization.seedStrategy)(initialDefinition as any).config.strategy=initialization.seedStrategy;
  (initialDefinition as any).config.firstTaskRepeat=initialization.presentation==='repeat-task-on-first-sample';
  if(initialUser!==undefined)(initialDefinition as any).config.strategy=initialUser;
- validateDefinition(initialDefinition);
+ validateFrozenWorkflow(options.dataset,initialDefinition);
  const benchmark=await loadBenchmark(options.dataset,{dataDir:options.dataDir,split:options.command==='search'?'validate':'test',dataMode:'formal',limit:0,
   ...(options.dataset==='humaneval'||options.dataset==='mbpp'?{codeJudge:new DockerPythonJudge({image:options.dockerImage})}:{}),
   ...(options.dataset==='automationbench'||options.dataset==='bfcl'?{artifactDir:store.path('private')}:{})});

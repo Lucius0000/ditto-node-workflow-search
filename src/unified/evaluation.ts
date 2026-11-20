@@ -59,8 +59,23 @@ export async function evaluateUnifiedCandidate<D=GraphDefinition>(options:Unifie
  };
  const cases=new Map<string,CaseResult>((saved?.cases??[]).map(row=>[row.caseId,retainCase(row)]));
  const failures=new Map<string,unknown>();
+ const probeTasks=new Map<string,string>();
+ if(benchmark.dataset==='bfcl'&&benchmark.split==='validate')for(const task of benchmark.tasks){
+  const category=typeof task.metadata.category==='string'?task.metadata.category:'default';
+  if(!probeTasks.has(category))probeTasks.set(category,task.id);
+ }
+ const probeCases=new Set([...probeTasks.values()].map(taskId=>taskId+'#1'));
+ const probeFaults=new Set<string>();
  const traces=new EvaluationTraceView(benchmark.tasks.map(task=>task.id),options.repeats);
- if(options.resume)for await(const trace of store.scan<unknown>(prefix+'/public-traces.jsonl'))traces.add(trace);
+ const retainTrace=(trace:unknown)=>{
+  traces.add(trace);
+  const entry=trace as {caseId?:string;modelFailure?:{code?:string}}|null;
+  if(entry?.caseId&&probeCases.has(entry.caseId)){
+   if(entry.modelFailure?.code==='MODEL_OUTPUT_FORMAT')probeFaults.add(entry.caseId);
+   else probeFaults.delete(entry.caseId);
+  }
+ };
+ if(options.resume)for await(const trace of store.scan<unknown>(prefix+'/public-traces.jsonl'))retainTrace(trace);
  if(saved?.complete)return selectionEvaluation(saved.complete,prefix,traces.views(saved.complete.results));
  const persist=()=>store.write(prefix+'/checkpoint.json',{identity,cases:[...cases.values()]});
  await store.write('candidates/'+id+'.json',{definition,artifactHash:options.candidateHash??artifactHash(definition),...(options.toolArtifacts?.length?{toolArtifacts:options.toolArtifacts}:{}),evaluationIdentity:identity});
@@ -69,7 +84,7 @@ export async function evaluateUnifiedCandidate<D=GraphDefinition>(options:Unifie
    const result=await options.runTask(definition,task);
    const record=result as AgentRunResult&{trace?:unknown;nodeInputs?:unknown;rawNodeOutputs?:unknown;reflectionResponses?:unknown;modelFailure?:unknown};
    const trace={taskId:task.id,caseId:currentEvaluationCaseId(),events:record.trace??[],nodeInputs:record.nodeInputs,rawNodeOutputs:record.rawNodeOutputs,modelFailure:record.modelFailure,executedNodeIds:result.executedNodeIds};
-   traces.add(trace);
+   retainTrace(trace);
    await store.append(prefix+'/public-traces.jsonl',trace);
    await store.append(prefix+'/executions/'+caseFile(task.id)+'.jsonl',{taskId:task.id,...result});
    return result;
@@ -95,12 +110,20 @@ export async function evaluateUnifiedCandidate<D=GraphDefinition>(options:Unifie
   if(ids.length===benchmark.tasks.length&&ids.every((value,index)=>value===benchmark.tasks[index]!.id))return benchmark.evaluate(runner,evalOptions);
   throw Error('Benchmark adapter lacks validation-only subset support');
  };
- // The dynamic interface probe is the same paid first case, not an extra quality vote.
+ // The real interface probes are the first scored cases, reused in the full measure.
  if(benchmark.split==='validate'){
-  const firstId=benchmark.tasks[0]!.id;
-  const first=await subset([firstId],{...common,repeats:1,concurrency:1,priorCases:[...cases.values()]});
-  for(const row of first.results)cases.set(row.caseId,row);
-  await options.onEvent?.({type:'interface-preflight-completed',candidateId:id,caseId:firstId+'#1',reusedInEvaluation:true});
+  const ids=probeTasks.size?[...probeTasks.values()]:[benchmark.tasks[0]!.id];
+  const probe=await subset(ids,{...common,repeats:1,concurrency:Math.min(options.concurrency,ids.length),priorCases:[...cases.values()]});
+  for(const row of probe.results)cases.set(row.caseId,row);
+  if(probeFaults.size){
+   const publicMessage='BFCL interface probe produced an invalid action. Preserve the fixed action and termination protocol.';
+   await options.onEvent?.({type:'interface-preflight-rejected',candidateId:id,failedCases:[...probeFaults].sort()});
+   throw Object.assign(new Error(publicMessage),{publicMessage,publicIssue:{
+    code:'B_BFCL_ACTION_CONTRACT',path:'/graphs/decision/output',message:publicMessage,
+    repairHint:'Remove conflicting action-format or termination instructions from editable strategy text.',
+   }});
+  }
+  for(const taskId of ids)await options.onEvent?.({type:'interface-preflight-completed',candidateId:id,caseId:taskId+'#1',reusedInEvaluation:true});
  }
  const stages=options.prune&&options.reference?unifiedStages(benchmark.tasks.length):[benchmark.tasks.length];
  const finish=async(summary:UnifiedEvaluation):Promise<UnifiedEvaluation>=>{

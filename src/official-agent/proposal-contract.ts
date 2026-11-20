@@ -41,6 +41,10 @@ function freeze<T>(value:T):T{
  if(value!==null&&typeof value==='object'){for(const child of Object.values(value))freeze(child);Object.freeze(value);}return value;
 }
 freeze(OFFICIAL_MUTATION_SCHEMA);freeze(OFFICIAL_PROPOSAL_SCHEMA);
+export const BFCL_PROPOSAL_SCHEMA=freeze({...OFFICIAL_PROPOSAL_SCHEMA,$id:'urn:ditto:workflow-search:bfcl-proposal-envelope:v1',properties:{
+ ...OFFICIAL_PROPOSAL_SCHEMA.properties,mutation:{...OFFICIAL_MUTATION_SCHEMA,
+  description:'Up to three functional nodes per proposal measured against the fixed round parent. List the primary and up to two other changed nodes, each with a reason.',
+  properties:{...OFFICIAL_MUTATION_SCHEMA.properties,auxiliary:{...OFFICIAL_MUTATION_SCHEMA.properties.auxiliary,maxItems:2}}}}});
 
 export interface OfficialProposalEnvelope {
  readonly rationale:string;
@@ -71,7 +75,7 @@ function text(value:unknown,path:string,maxLength?:number):asserts value is stri
 }
 
 /** Shape validation also protects callers that invoke change validation without parsing a proposal. */
-export function validateMutationExplanation(value:unknown,path='/mutation'):MutationExplanation{
+export function validateMutationExplanation(value:unknown,path='/mutation',maxCompanions=0):MutationExplanation{
  record(value,path);fields(value,['primaryNodeId','auxiliary'],path);
  const primary=required(value,'primaryNodeId',path);text(primary,pointer(path,'primaryNodeId'));
  const auxiliary=required(value,'auxiliary',path),auxPath=pointer(path,'auxiliary');
@@ -85,12 +89,12 @@ export function validateMutationExplanation(value:unknown,path='/mutation'):Muta
   if(seen.has(nodeId))fail('Duplicate auxiliary nodeId',pointer(itemPath,'nodeId'),'List each auxiliary node exactly once with its own reason.');
   seen.add(nodeId);
  });
- if(auxiliary.length)fail(`Companion additions are disabled: allowed=0 actual=${auxiliary.length}; auxiliary=${JSON.stringify([...seen])}`,auxPath,'Use auxiliary:[] and restore all other functional nodes. Only one added, removed or functionally modified node is allowed.');
+ if(auxiliary.length>maxCompanions)fail(`Too many companion nodes: allowed=${maxCompanions} actual=${auxiliary.length}; auxiliary=${JSON.stringify([...seen])}`,auxPath,maxCompanions?'List the primary and at most two companion changes.':'Use auxiliary:[] and restore all other functional nodes. Only one added, removed or functionally modified node is allowed.');
  return value as unknown as MutationExplanation;
 }
 
 /** Validate proposal data, never guess repairs or coerce a malformed rationale/mutation. */
-export function validateProposalEnvelope(value:unknown):OfficialProposalEnvelope{
+export function validateProposalEnvelope(value:unknown,maxCompanions=0):OfficialProposalEnvelope{
  record(value,'');fields(value,['rationale','definition','mutation','toolArtifacts'],'');
  const rationale=required(value,'rationale','');text(rationale,'/rationale',8000);
  const definition=required(value,'definition','');record(definition,'/definition');
@@ -100,7 +104,7 @@ export function validateProposalEnvelope(value:unknown):OfficialProposalEnvelope
  const graphs=required(definition,'graphs','/definition');record(graphs,'/definition/graphs');
  const main=required(graphs,'main','/definition/graphs');record(main,'/definition/graphs/main');
  const nodes=required(main,'nodes','/definition/graphs/main');if(!Array.isArray(nodes))fail(`Expected node array; received ${kind(nodes)}`,'/definition/graphs/main/nodes','Supply main:{nodes:[...],output:...}.');
- if(Object.hasOwn(value,'mutation'))validateMutationExplanation(value.mutation);
+ if(Object.hasOwn(value,'mutation'))validateMutationExplanation(value.mutation,'/mutation',maxCompanions);
  if(Object.hasOwn(value,'toolArtifacts')){
   const tools=value.toolArtifacts;if(!Array.isArray(tools))fail(`Expected toolArtifacts array; received ${kind(tools)}`,'/toolArtifacts','Use an array of {name,description,inputSchema,executeSource}, or omit toolArtifacts when no tools are proposed.');
   tools.forEach((tool,index)=>{

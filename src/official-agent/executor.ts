@@ -1,4 +1,4 @@
-import {compileAgent,type AgentDefinition,type CompiledAgent} from '@codesoul-co/ditto/runtime';
+import {compileAgent,type AgentDefinition,type CompiledAgent,type AgentBoundary,type AgentBoundaryDecision} from '@codesoul-co/ditto/runtime';
 import type {ModelProvider,SampleOutput} from '@codesoul-co/ditto/worker/infer';
 import type {WorkerDefinition} from '@codesoul-co/ditto/worker';
 import type {RegisteredTool} from '@codesoul-co/ditto/worker/interaction';
@@ -21,17 +21,37 @@ import {createTaskRetrieval} from '../graph-agent/retrieval.js';
 import {NODE_SYSTEM_PROMPT,NODE_SYSTEM_VERSION} from '../graph-agent/system.js';
 import {automationScope,AUTOMATION_TOOLS} from '../benchmark/automation.js';
 import {createAutomationTools} from '../ditto/automation-tools.js';
-import {bfclScope,BFCL_GUIDE} from '../benchmark/bfcl.js';
+import {bfclScope,BFCL_GUIDE,BFCL_TOOLS} from '../benchmark/bfcl.js';
 import {createBfclTools} from '../ditto/bfcl-tools.js';
 import {AutomationActorBudgetExceeded} from '../execution/automation-budget.js';
-import {createOfficialDataWorker} from './helpers.js';
+import {createOfficialDataWorker,transformOfficialData} from './helpers.js';
 import {createToolProgressTracker} from './progress.js';
 import {HOST_INFER_MESSAGES_SCHEMA} from './native-contracts.js';
 import {validateNativeLiteral} from './native-validation.js';
 import {DefinitionError} from '../graph-agent/schema.js';
+import {validateBfclSearchGraph} from './baselines.js';
+import {BFCL_ACTION_CONTRACT} from './bfcl-strategy.js';
+import {decodeBfclDsml} from './decision-protocol.js';
 
 export const OFFICIAL_EXECUTOR_VERSION='ditto-official-compiled-agent-v1';
 export const OFFICIAL_EVIDENCE_VERSION='official-native-source-map-v1';
+
+function bfclBoundary(boundary:AgentBoundary):AgentBoundaryDecision{
+ const {step,result,state}=boundary;
+ if(step==='decision'){
+  const decision=decodeBfclDsml(result)??transformOfficialData({operation:'decision',value:result,allowedTools:BFCL_TOOLS});
+  if(decision.done&&state.complete!==true)throw new ModelOutputFormatError('BFCL cannot finish before the official conversation completes');
+  return {update:{decision,final:decision.finalAnswer,complete:decision.done}};
+ }
+ if(step!=='bootstrap'&&step!=='action')throw new OfficialAgentContractError('Unknown BFCL conversation boundary');
+ const bootstrap=step==='bootstrap';
+ const provenance=[{graphId:bootstrap?'main':'action',nodeId:bootstrap?'state':'observe',
+  nativePath:['structuredContent'],nodeType:bootstrap?'INTERACTION.ACT.TOOL':'INTERACTION.OBSERVE'}];
+ const evidence=transformOfficialData({operation:'evidence',value:result,provenance});
+ if(bootstrap)return {update:{history:[{role:'user',content:evidence}],complete:(result as {complete?:boolean}|null)?.complete===true}};
+ const decision=state.decision as {tool:string};
+ return {update:transformOfficialData({operation:'bfcl-history',tool:decision.tool,decision,value:result,evidence,history:state.history})};
+}
 
 export class OfficialAgentContractError extends Error {
  readonly code='OFFICIAL_AGENT_CONTRACT';readonly failureKind='execution';readonly publicMessage:string;
@@ -76,9 +96,12 @@ function messageText(value:unknown,nodeId:string):string{
 /** The npm compiler owns expressions, Subgraph expansion, bindings, DAG and Loop scheduling. */
 export async function runOfficialAgent(definition:AgentDefinition,task:BenchmarkTask,shared:ExperimentRuntime,settings:ProviderSettings,options:OfficialExecutionOptions={}):Promise<OfficialAgentResult>{
  let compiled:CompiledAgent;
- try{compiled=compileAgent(definition);}catch(error){
+ try{
+  compiled=compileAgent(definition);
+  if(task.dataset==='bfcl')validateBfclSearchGraph(compiled.definition);
+ }catch(error){
   const diagnostic=(error as {diagnostic?:{path?:string;message?:string}})?.diagnostic;
-  throw new OfficialAgentContractError(diagnostic?.message??(error instanceof Error?error.message:String(error)),undefined,diagnostic?.path);
+  throw new OfficialAgentContractError(diagnostic?.message??(error instanceof Error?error.message:String(error)),undefined,diagnostic?.path??(error instanceof DefinitionError?error.path:undefined));
  }
  const signal=currentTimeBudgetSignal(),automation=automationScope.getStore(),bfcl=bfclScope.getStore();
  if(task.dataset==='automationbench'&&!automation)throw new OfficialAgentContractError('Automation execution requires a fresh official task world');
@@ -86,8 +109,9 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
  const toolCatalog=automation?`Available official task-world tools:\n${JSON.stringify(automation.tools)}`:bfcl?`${BFCL_GUIDE}\nAvailable official conversation tools:\n${JSON.stringify(bfcl.tools)}`:'';
  const taskRequirements=taskOutputRequirements(task),originalTaskMessage={role:'user' as const,content:`Original task:\n${task.prompt}\n\nTask output requirements:\n${taskRequirements}`};
  const model={provider:shared.providerName,model:shared.model};
- const host={model,generation:GENERATION,system:NODE_SYSTEM_PROMPT,taskRequirements,originalTaskMessage,taskMessage:originalTaskMessage.content,
-  messages:[{role:'system',content:NODE_SYSTEM_PROMPT},originalTaskMessage],toolCatalog};
+ const system=bfcl?NODE_SYSTEM_PROMPT+'\n\n'+BFCL_ACTION_CONTRACT:NODE_SYSTEM_PROMPT;
+ const host={model,generation:GENERATION,system,taskRequirements,originalTaskMessage,taskMessage:originalTaskMessage.content,
+  messages:[{role:'system',content:system},originalTaskMessage],toolCatalog};
  const input={task:{id:task.id,dataset:task.dataset,prompt:task.prompt,outputInstruction:task.outputInstruction},host};
  const standard=createBenchmarkTools(),retrieval=createTaskRetrieval(task);
  const contract=graphAgentReflectionProvider(shared.provider),modelResponses:ModelResponseRecord[]=[],audits:CheckerAudit[]=[];
@@ -103,7 +127,7 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
   }catch(error){providerFault=error;throw error;}
  }};
  const progress=createToolProgressTracker();
- const scoped=createExperimentRuntime(settings,{provider:recordingProvider,managedProvider:true,tools:[...standard,...createAutomationTools(),...createBfclTools(),...(options.tools??[])],workers:[retrieval.worker,createOfficialDataWorker(progress),...(options.workers??[])],memory:createTaskMemory(),reflectionEvent:async event=>{
+ const scoped=createExperimentRuntime(settings,{provider:recordingProvider,managedProvider:true,tools:[...standard,...(bfcl?[]:createAutomationTools()),...createBfclTools(),...(options.tools??[])],workers:[retrieval.worker,...(bfcl?[]:[createOfficialDataWorker(progress)]),...(options.workers??[])],memory:createTaskMemory(),reflectionEvent:async event=>{
   if(event.outcome==='exhausted')exhaustedReflections.set(String(event.nodeId),event.error??'Model reflection did not satisfy its fixed response contract');
   await shared.reflectionEvent?.(event);
  }});
@@ -120,7 +144,7 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
    prepared.model=model;prepared.generation=GENERATION;
    if(!Array.isArray(prepared.messages))throw new OfficialAgentContractError('messages must contain the fixed input.host.messages and optional user artifacts',nodeId);
    const systems=prepared.messages.filter((m:any)=>m?.role==='system');
-   if(systems.length!==1||systems[0].content!==NODE_SYSTEM_PROMPT)throw new OfficialAgentContractError('messages must contain exactly the frozen host system; dataset/candidate instructions belong to user messages',nodeId);
+   if(systems.length!==1||systems[0].content!==system)throw new OfficialAgentContractError('messages must contain exactly the frozen host system; dataset/candidate instructions belong to user messages',nodeId);
    if(!prepared.messages.some((m:any)=>m?.role==='user'&&m.content===originalTaskMessage.content))throw new OfficialAgentContractError('Original public task and output requirements must remain present through input.host.messages',nodeId);
    prepared.metadata={...(prepared.metadata??{}),experiment:OFFICIAL_EXECUTOR_VERSION,nodeType:type,nodeId,graphId:event.graphId,taskId:task.id,dataset:task.dataset,systemVersion:NODE_SYSTEM_VERSION};
    const declaration=declarationFor(event),source=sourceFor(event);
@@ -190,7 +214,10 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
   generationOutcomes:Object.values(nodeOutputs).flatMap(value=>value?.output?.generationOutcome?[value.output.generationOutcome]:[]),...(modelFailure?{modelFailure}:{})});
  try{
   const answer=await captureCapabilityExecution({before:prepare,after:complete},()=>compiled.run(scoped.runtime,input,{
-   ...(signal?{signal}:{}),onGraph:event=>{if(event.status==='started')executedGraphIds.push(event.graphId);},onBoundary:boundary=>{state=structuredClone(boundary.state);},
+   ...(signal?{signal}:{}),onGraph:event=>{if(event.status==='started')executedGraphIds.push(event.graphId);},onBoundary:boundary=>{
+    const next=bfcl?bfclBoundary(boundary):undefined;
+    state=structuredClone({...boundary.state,...next?.update});return next;
+   },
   }));
   return result(messageText(answer,'output'));
  }catch(error){

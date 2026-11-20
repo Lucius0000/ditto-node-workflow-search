@@ -9,7 +9,7 @@ import {createExperimentRuntime,experimentRuntimeConfig} from '../ditto/runtime.
 import {runOfficialAgent} from '../official-agent/executor.js';
 import type {BenchmarkTask} from '../domain.js';
 import {parseUnifiedArguments} from '../unified/cli.js';
-import {runUnifiedExperiment} from '../official-agent/runner.js';
+import {runUnifiedExperiment,validateFrozenWorkflow} from '../official-agent/runner.js';
 
 const task:BenchmarkTask={id:'fixture',dataset:'drop',prompt:'Passage: The touchdown was 49 yards. Question: How many yards?',outputInstruction:'',metadata:{}};
 const clone=(x:unknown):any=>JSON.parse(JSON.stringify(x));
@@ -88,6 +88,40 @@ test('legacy memory graph imports into native JSON and executes with the npm com
 
 test('task-world baselines declare real Loop/tool/observation flow under official schema',()=>{
  for(const dataset of ['automationbench','bfcl'] as const){const d=validateOfficialDefinition(officialBaseline(dataset));assert(d.loop);assert.equal(expandedOfficialNodes(d).filter(n=>n.type==='INFER.REASONING.SAMPLE').length,1);}
+});
+
+test('BFCL proposal limits allow three functional nodes after rejecting four under the same parent',async()=>{
+ const requests:{parent:string;limit:number}[]=[];
+ const runtime:any={async run(_graph:any,input:any){
+  const request=JSON.parse(input.request);
+  requests.push({parent:request.parent.id,limit:request.immutableProtocol.mutationLimits.maxFunctionalNodeChanges});
+  assert(!request.immutableProtocol.capabilities.includes('HOST.DATA.TRANSFORM'));
+  assert.equal(request.nativeCatalogue.nodes['HOST.DATA.TRANSFORM'],undefined);
+  const d=clone(request.parent.definition),graph=d.graphs.decision,decide=graph.nodes[0];
+  const ids=Array.from({length:requests.length===1?4:3},(_,i)=>'hint'+i);
+  graph.nodes.unshift(...ids.map(id=>({id,type:'CONTEXT.LOAD',input:{sources:[{role:'user',content:'Read relevant public evidence '+id}]}})));
+  decide.dependsOn=ids;
+  decide.input.messages={$op:'concat',args:[decide.input.messages,ids.map(id=>({role:'user',content:{$ref:'nodes.'+id+'.items.0.content'}}))]};
+  return {proposal:{status:'success',output:{message:{content:JSON.stringify({rationale:'Review three public hints',definition:d})}}}};
+ }};
+ const search=await searchOfficialWorkflows({runtime,model:{provider:'mock',model:'mock'},dataset:'bfcl',publicTasks:[{...task,dataset:'bfcl'}],expectedRepeats:1,maxValidEvaluations:2,maxDesignRounds:1,maxProposalAttempts:2,exploration:false,evaluate:async d=>summary(d)});
+ assert.deepEqual(requests,[{parent:'official-0001',limit:3},{parent:'official-0001',limit:3}]);
+ assert.deepEqual(search.state.history.map(row=>row.status),['valid','invalid-proposal','valid']);
+ assert.match(search.state.history[1]?.publicErrors?.join(' ')??'',/allowed=3 actual=4/);
+});
+
+test('frozen BFCL workflow load preserves the saved settings and rejects a host transform',()=>{
+ const frozen=clone(officialBaseline('bfcl'));
+ frozen.config.strategy='frozen user strategy';
+ frozen.config.firstTaskRepeat=true;
+ const standardSelection=JSON.parse(JSON.stringify(frozen));
+ validateFrozenWorkflow('bfcl',standardSelection);
+ assert.deepEqual(standardSelection,frozen);
+ const graph=standardSelection.graphs.decision;
+ graph.nodes.push({id:'bad',type:'HOST.DATA.TRANSFORM',input:{operation:'text',value:'not a BFCL capability'}});
+ graph.nodes[0].dependsOn=['bad'];
+ graph.nodes[0].input.messages={$op:'concat',args:[graph.nodes[0].input.messages,[{role:'user',content:{$ref:'nodes.bad'}}]]};
+ assert.throws(()=>validateFrozenWorkflow('bfcl',standardSelection),/HOST.DATA.TRANSFORM is outside/);
 });
 
 test('same-round metadata repair can admit a previously rejected executable definition',async()=>{
