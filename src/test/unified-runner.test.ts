@@ -105,3 +105,48 @@ test('artifact paths cannot escape the run directory',async()=>workspace(async s
  assert.throws(()=>store.path('../outside'),/escapes/);
  await store.write('safe/value.json',{ok:true});assert.equal(JSON.parse(await readFile(store.path('safe/value.json'),'utf8')).ok,true);
 }));
+
+test('BFCL timeout cannot enter the official candidate scores and resume preserves an already scored case',async()=>workspace(async store=>{
+ const tasks:BenchmarkTask[]=benchmark(2).tasks.map(task=>({...task,dataset:'bfcl'}));
+ const scorer:PrivateScorer={expectedLabel:()=> 'BFCL checker',async score(_id,prediction){
+  return {score:1,expected:'official',prediction,normalizedExpected:'pass',normalizedPrediction:'pass',method:'bfcl-multiturn-family-v1-official-checker'};
+ }};
+ const loaded:LoadedBenchmark={dataset:'bfcl',split:'validate',tasks,
+  evaluate:(runner,options)=>evaluateTasks(tasks,scorer,runner,options),
+  evaluateSearchSubset:(ids,runner,options)=>evaluateTasks(searchSubset('validate',tasks,ids),scorer,runner,options)};
+ let attempts=0,healthy=false;
+ const options={benchmark:loaded,definition:BASELINE_DEFINITION,id:'bfcl-timeout',store,executionIdentity:'bfcl-timeout-fixture',
+  repeats:1,concurrency:1,retryAttempts:1,timeBudget:{requestMs:null,workflowMs:80,reason:'Test the BFCL world deadline'},
+  async runTask(_definition:unknown,task:BenchmarkTask):Promise<AgentRunResult>{
+   attempts++;
+   if(task.id===tasks[1]!.id&&!healthy)await new Promise(resolve=>setTimeout(resolve,160));
+   return result();
+  }};
+ await assert.rejects(()=>evaluateUnifiedCandidate(options),error=>error instanceof UnifiedEvaluationError&&error.failureKind==='timeout'&&error.infrastructureFailure);
+ assert.equal(await store.optional('evaluations/bfcl-timeout/summary.json'),undefined);
+ healthy=true;
+ const resumed=await evaluateUnifiedCandidate({...options,resume:true});
+ assert.equal(attempts,3);
+ assert.equal(resumed.results.length,2);
+ assert.equal(resumed.score,1);
+}));
+
+test('BFCL judge-only recovery keeps a large saved conversation and never repeats its actions',async()=>workspace(async store=>{
+ const tasks:BenchmarkTask[]=benchmark(1).tasks.map(task=>({...task,dataset:'bfcl'}));
+ const snapshot={world:'public world fixture '.repeat(4000),caseId:tasks[0]!.id+'#1'};
+ let actions=0,grades=0;
+ const scorer:PrivateScorer={expectedLabel:()=> 'BFCL checker',recoveryData:()=>snapshot,async score(_id,prediction,prior){
+  if(++grades===1)throw Error('Official scorer unavailable');
+  assert.deepEqual(prior?.judgeRecovery,snapshot);
+  return {score:1,expected:'official',prediction,normalizedExpected:'pass',normalizedPrediction:'pass',method:'bfcl-multiturn-family-v1-official-checker'};
+ }};
+ const loaded:LoadedBenchmark={dataset:'bfcl',split:'validate',tasks,
+  evaluate:(runner,options)=>evaluateTasks(tasks,scorer,runner,options),
+  evaluateSearchSubset:(ids,runner,options)=>evaluateTasks(searchSubset('validate',tasks,ids),scorer,runner,options)};
+ const options={benchmark:loaded,definition:BASELINE_DEFINITION,id:'bfcl-judge',store,executionIdentity:'bfcl-judge-fixture',
+  repeats:1,concurrency:1,retryAttempts:1,async runTask(){actions++;return result();}};
+ await assert.rejects(()=>evaluateUnifiedCandidate(options),error=>error instanceof UnifiedEvaluationError&&error.failureKind==='judge'&&error.infrastructureFailure);
+ const resumed=await evaluateUnifiedCandidate({...options,resume:true});
+ assert.equal(resumed.score,1);
+ assert.equal(actions,1);
+}));

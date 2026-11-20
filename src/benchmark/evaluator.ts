@@ -103,12 +103,15 @@ async function evaluateOne(
     }
   } catch (error) {
     if (error instanceof TimeBudgetExceeded) {
+      // BFCL scores the saved conversation state. A canceled world has no official grade.
+      const requiresGrade = task.dataset === "bfcl";
       return Object.freeze({
-        caseId: `${task.id}#${repeat + 1}`, ...history, valid: true, usageKnown: false,
+        caseId: `${task.id}#${repeat + 1}`, ...history, valid: !requiresGrade, usageKnown: false,
         attempts: Object.freeze(attempts), ...aggregateUsage(error, attempts, prior),
         score: 0, expected: expectedLabel(scorer, task.id), prediction: "",
         normalizedExpected: "", normalizedPrediction: "", method: "time-budget-exhausted",
         timeBudgetOutcome: error.outcome, latencyMs: Date.now() - started,
+        ...(requiresGrade ? { failureKind: "timeout" as const, error: error.message } : {}),
       });
     }
     const message = error instanceof Error ? error.message : String(error);

@@ -51,7 +51,12 @@ export async function evaluateUnifiedCandidate<D=GraphDefinition>(options:Unifie
  const saved=options.resume?await store.optional<EvaluationCheckpoint>(prefix+'/checkpoint.json'):undefined;
  if(saved&&saved.identity!==identity)throw Error('Candidate/data/prompt/runtime identity differs; cached cases cannot be reused');
  if(saved?.complete?.artifacts?.representation==='selection')return saved.complete;
- const retainCase=(row:CaseResult)=>boundedCaseDetails(row,prefix+'/case-events.jsonl');
+ const retainCase=(row:CaseResult):CaseResult=>{
+  const retained=boundedCaseDetails(row,prefix+'/case-events.jsonl');
+  // A failed BFCL grade resumes from the exact official snapshot, even if it exceeds the trace excerpt cap.
+  return benchmark.dataset==='bfcl'&&row.failureKind==='judge'&&row.judgeRecovery!==undefined
+   ? {...retained,judgeRecovery:row.judgeRecovery}:retained;
+ };
  const cases=new Map<string,CaseResult>((saved?.cases??[]).map(row=>[row.caseId,retainCase(row)]));
  const failures=new Map<string,unknown>();
  const traces=new EvaluationTraceView(benchmark.tasks.map(task=>task.id),options.repeats);
