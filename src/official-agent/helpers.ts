@@ -2,7 +2,7 @@ import {defineWorker,type WorkerNodes} from '@codesoul-co/ditto/worker';
 import {createHash} from 'node:crypto';
 import {BindingContractError,ModelOutputFormatError} from '../graph-agent/bindings.js';
 import {progressHistory,layeredHistory,type ToolProgressTracker} from './progress.js';
-import {automationDecisionAttempt} from './decision-protocol.js';
+import {automationDecisionAttempt,decodeBfclDsml} from './decision-protocol.js';
 import {automationReview,automationReviewFeedback} from './automation-review.js';
 
 export const DATA_TRANSFORM_NODE='HOST.DATA.TRANSFORM';
@@ -22,6 +22,11 @@ export function transformOfficialData(input:any,progress?:ToolProgressTracker):a
    }
   }
   case'decision':{
+   const allowedTools=input.allowedTools;
+   if(Array.isArray(allowedTools)&&allowedTools.length===3&&['bfcl_state','bfcl_call','bfcl_respond'].every(name=>allowedTools.includes(name))){
+    const dsml=decodeBfclDsml(value);
+    if(dsml)return dsml;
+   }
    let d:any;try{d=JSON.parse(value);}catch{throw new ModelOutputFormatError('Task-world decision must be strict JSON');}
    if(!d||typeof d!=='object'||typeof d.done!=='boolean'||typeof d.tool!=='string'||!d.arguments||typeof d.arguments!=='object'||Array.isArray(d.arguments))throw new ModelOutputFormatError('Decision requires done:boolean, tool:string and arguments:object');
    if(d.done&&d.tool!==''||!d.done&&(!Array.isArray(input.allowedTools)||!input.allowedTools.includes(d.tool)))throw new ModelOutputFormatError('Decision tool is not a permitted official tool (empty when done)');

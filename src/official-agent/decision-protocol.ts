@@ -1,5 +1,8 @@
 import {parseExpressionAt} from 'acorn';
 import {ModelOutputFormatError} from '../graph-agent/bindings.js';
+import {BFCL_TOOLS} from '../benchmark/bfcl.js';
+import {HOST_TOOL_CONTRACTS} from './native-contracts.js';
+import {validateNativeLiteral} from './native-validation.js';
 
 export const DECISION_PROTOCOL_VERSION='single-action-protocol-v1';
 type ObjectValue=Record<string,any>;
@@ -73,4 +76,16 @@ export function automationDecisionAttempt(source:unknown,allowedTools:readonly s
   const failure=error instanceof ModelOutputFormatError?error:new ModelOutputFormatError(error instanceof Error?error.message:String(error));
   return{done:false,tool:'',arguments:{},finalAnswer:'',valid:false as const,protocol:{version:DECISION_PROTOCOL_VERSION,format:'unrecognized',recovered:false,error:{code:failure.code,message:failure.message},rawContent:source}};
  }
+}
+
+/** BFCL accepts only a single complete DSML action, under the same public tool contract. */
+export function decodeBfclDsml(source:unknown){
+ if(typeof source!=='string'||!source.trimStart().startsWith('<｜｜DSML｜｜ calls>'))return undefined;
+ const decision=automationDecisionAttempt(source,BFCL_TOOLS);
+ if(!decision.valid||decision.protocol.format!=='dsml-single-call')fail('error' in decision.protocol?decision.protocol.error.message:'Invalid BFCL DSML action');
+ try{
+  validateNativeLiteral(decision.arguments,HOST_TOOL_CONTRACTS[decision.tool]!.inputSchema,'/decision/arguments');
+ }catch{fail('DSML action arguments do not meet the public BFCL interface');}
+ const {done,tool,arguments:args,finalAnswer}=decision;
+ return {done,tool,arguments:args,finalAnswer};
 }

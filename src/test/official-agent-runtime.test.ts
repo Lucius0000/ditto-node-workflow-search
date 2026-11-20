@@ -216,3 +216,40 @@ test('generic tool history preserves native failure evidence without inferring c
  assert.throws(()=>transformOfficialData({...args,tool:'api_search'}),/Tool history requires native observation/);
  assert.throws(()=>transformOfficialData({...args,decision:{...decision,done:true}}),/Tool history decision/);
 });
+test('BFCL accepts complete single-call DSML under its published interface',async()=>{
+ const {decodeBfclDsml}=await import('../official-agent/decision-protocol.js');
+ const dsml=(tool:string,args:unknown)=>[
+  '<｜｜DSML｜｜ calls>',`<｜｜DSML｜｜ invoke name="${tool}">`,
+  `<｜｜DSML｜｜ parameter name="arguments" string="false">${JSON.stringify(args)}</｜｜DSML｜｜ parameter>`,
+  '</｜｜DSML｜｜ invoke>','</｜｜DSML｜｜ calls>',
+ ].join('\n');
+ const args={turn:1,calls:[{name:'read_status',arguments:{id:'public'}}]};
+ assert.deepEqual(decodeBfclDsml(dsml('bfcl_call',args))?.arguments,args);
+ assert.equal(decodeBfclDsml('{"done":true,"tool":"","arguments":{}}'),undefined);
+ assert.throws(()=>decodeBfclDsml(dsml('bfcl_call',args).replace('</｜｜DSML｜｜ calls>','</tool_response>')),/Unrecognized/);
+ assert.throws(()=>decodeBfclDsml(dsml('bfcl_call',{turn:1,calls:[]})),/public BFCL interface/);
+ assert.throws(()=>decodeBfclDsml(dsml('outside_scope',args)),/permitted official tool/);
+ assert.throws(()=>decodeBfclDsml(dsml('bfcl_call',args).replace('</｜｜DSML｜｜ calls>',dsml('bfcl_call',args))),/one complete/);
+});
+
+test('BFCL DSML reaches the native tool and the next decision sees its real observation',async()=>{
+ const {officialBaseline}=await import('../official-agent/baselines.js');
+ const executed:string[]=[];
+ const fakeWorld:any={tools:['bfcl_state','bfcl_call','bfcl_respond'].map(name=>({name,inputSchema:{type:'object',additionalProperties:true}})),assertHealthy(){},
+  async call(name:string){executed.push(name);return name==='bfcl_call'?{turn:0,observations:['STATUS_FROM_WORLD'],complete:false}:{turn:0,history:[],functions:[],complete:name==='bfcl_respond'};}};
+ const dsml=['<｜｜DSML｜｜ calls>','<｜｜DSML｜｜ invoke name="bfcl_call">',
+  '<｜｜DSML｜｜ parameter name="arguments" string="false">{"turn":0,"calls":[{"name":"read_status","arguments":{}}]}</｜｜DSML｜｜ parameter>',
+  '</｜｜DSML｜｜ invoke>','</｜｜DSML｜｜ calls>'].join('\n');
+ let requests=0;
+ const shared=createExperimentRuntime(settings,{provider:{async invoke(input){
+  if(requests++)assert.match(JSON.stringify(input.messages),/STATUS_FROM_WORLD/);
+  const content=requests===1?dsml:'{"done":false,"tool":"bfcl_respond","arguments":{"turn":0,"message":"Status confirmed"}}';
+  return {message:{role:'assistant',content},finishReason:'stop',usage:{inputTokens:0,outputTokens:0,totalTokens:0}};
+ }}});
+ try{
+  const result=await bfclScope.run(fakeWorld,()=>runOfficialAgent(officialBaseline('bfcl'),{...task,dataset:'bfcl'},shared,settings));
+  assert.deepEqual(executed,['bfcl_state','bfcl_call','bfcl_respond']);
+  assert.equal(result.modelFailure,undefined);
+  assert.equal(requests,2);
+ }finally{await shared.close();}
+});
